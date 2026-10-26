@@ -10,6 +10,9 @@
 #include <signal.h>
 #include <time.h>
 #include <sys/time.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -114,7 +117,16 @@ extern "C" {
  * [BB_LOW_MIN, BB_LOW_MAX): host memory the guest sees (image, stacks, trampolines, the runtime's
  * heap on macOS). [BB_USER_MIN, BB_USER_MAX): the game's own mappings. Under Rosetta 2 the range
  * [0xfc0000000, 0x7000000000) cannot be mapped, so the game's range starts at 448 GiB there. */
-#if defined(BB_MACOS) && defined(__aarch64__)
+#if defined(BB_MACOS) && TARGET_OS_IPHONE
+/* iOS (proof of concept, branch ios-poc): without the extended-virtual-addressing entitlement an
+ * app's map ends at 0x7200000000 and only [0x7000000000, 0x7200000000) is free for large
+ * mappings (the shared cache and a permanent 384 GiB guard hold the rest). The low range takes
+ * its first GiB, the game's range 6 GiB above it; the last GiB stays for the system. */
+#define BB_LOW_MIN UINT64_C(0x7000000000)
+#define BB_LOW_MAX UINT64_C(0x7040000000)
+#define BB_USER_MIN UINT64_C(0x7040000000)
+#define BB_USER_MAX UINT64_C(0x71c0000000)
+#elif defined(BB_MACOS) && defined(__aarch64__)
 /* Native arm64 macOS: [0x180000000, 0x7000000000) is the shared region and the host's own
  * allocations start at 0x7000000000 (the GPU driver reserves ~24 GiB there before main), so the
  * game's range starts at 512 GiB and the low range sits just below its end, under 1 TiB. The

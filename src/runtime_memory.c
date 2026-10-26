@@ -25,7 +25,9 @@ static uint64_t game_pool_bytes(void) {
     if (!size) {
         const char *env = getenv("BB_DMEM_MB");
         uint64_t mb = env ? strtoull(env, NULL, 10) : 0;
-        if (mb < 5056 || mb > 16384) mb = 5056;
+        /* ios-poc: values down to 1024 are accepted, to find what the game needs in an iPhone's
+         * 8 GiB of address space (main keeps 5056 as the minimum). */
+        if (mb < 1024 || mb > 16384) mb = 5056;
         size = mb * 1024 * 1024;
     }
     return size;
@@ -155,9 +157,16 @@ static int pool(void) {
     if (pool_fd>=0) return 0;
     pool_fd=bb_shared_memory("bb-guest-memory",POOL_SIZE+FLEX_SPAN);
     if (pool_fd<0) return -1;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    /* iOS (proof of concept): no second view, the app has 8 GiB of address space in all
+     * (platform.h). The pool is a file there: clears punch holes in it, host writes and reads
+     * use pwrite and pread. */
+    backing_base=NULL;
+#else
     void *view=mmap(NULL,POOL_SIZE+FLEX_SPAN,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_NORESERVE,pool_fd,0);
     if (view==MAP_FAILED) return -1;
     backing_base=view;
+#endif
     chunk_fds=malloc((POOL_SIZE/CHUNK+1)*sizeof(int));
     if (!chunk_fds) return -1;
     for (uint64_t c=0;c<=POOL_SIZE/CHUNK;++c) chunk_fds[c]=-1;
@@ -992,7 +1001,10 @@ int runtime_memory_write_backing(uintptr_t address, const void *data, uint64_t s
         size_t i=vma_index(at);
         if (i==vma_count || vmas[i].start>at || vmas[i].kind==KIND_RESERVED) { ok=0; break; }
         uint64_t n=(vmas[i].end<end ? vmas[i].end : end)-at;
-        store_once(backing_base+vmas[i].phys+(at-vmas[i].start),(const unsigned char *)data+(at-address),n);
+        if (!backing_base) /* iOS: no view (pool()) */
+            ok=pwrite(pool_fd,(const unsigned char *)data+(at-address),n,(off_t)(vmas[i].phys+(at-vmas[i].start)))==(ssize_t)n;
+        else
+            store_once(backing_base+vmas[i].phys+(at-vmas[i].start),(const unsigned char *)data+(at-address),n);
         at+=n;
     }
     read_unlock();
@@ -1010,7 +1022,10 @@ void runtime_memory_read_backing(uintptr_t address, void *data, uint64_t size) {
         uint64_t n;
         if (i<vma_count && vmas[i].start<=at && vmas[i].kind!=KIND_RESERVED) {
             n=(vmas[i].end<end ? vmas[i].end : end)-at;
-            memcpy(out+(at-address),backing_base+vmas[i].phys+(at-vmas[i].start),n);
+            if (!backing_base) { /* iOS: no view (pool()) */
+                if (pread(pool_fd,out+(at-address),n,(off_t)(vmas[i].phys+(at-vmas[i].start)))!=(ssize_t)n) memset(out+(at-address),0,n);
+            } else
+                memcpy(out+(at-address),backing_base+vmas[i].phys+(at-vmas[i].start),n);
         } else {
             const uintptr_t next=i==vma_count ? end : vmas[i].start>at ? vmas[i].start : vmas[i].end;
             n=(next<end ? next : end)-at;

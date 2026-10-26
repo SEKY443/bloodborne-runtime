@@ -11,6 +11,8 @@
 #include <SDL3/SDL_main.h>
 
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <mach/mach.h>
 #include <os/proc.h>
 #include <stdint.h>
@@ -55,6 +57,50 @@ static void report_address_space(void) {
     fflush(stdout);
 }
 
+/* BB_IOS_FILE_TEST=MiB: does memory backed by a mapped file count against the app's memory
+ * limit? Maps an unlinked temporary file of that size, writes every page and logs the memory
+ * still available after each 256 MiB. */
+static void file_memory_test(unsigned mib) {
+    const char *tmp = getenv("TMPDIR");
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/bb-file-test", tmp ? tmp : "/tmp");
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) { printf("file test: open: %s\n", strerror(errno)); return; }
+    unlink(path);
+    uint64_t size = (uint64_t)mib << 20;
+    if (ftruncate(fd, (off_t)size)) { printf("file test: ftruncate: %s\n", strerror(errno)); return; }
+    unsigned char *p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (p == MAP_FAILED) { printf("file test: mmap: %s\n", strerror(errno)); return; }
+    printf("file test: %u MiB mapped at %p; available %.2f GiB\n", mib, (void *)p, (double)os_proc_available_memory() / (1 << 30));
+    fflush(stdout);
+    for (uint64_t at = 0; at < size; at += 16384) {
+        p[at] = 1;
+        if ((at + 16384) % (UINT64_C(256) << 20) == 0) {
+            printf("file test: %llu MiB written, available %.2f GiB\n", (unsigned long long)((at + 16384) >> 20),
+                   (double)os_proc_available_memory() / (1 << 30));
+            fflush(stdout);
+        }
+    }
+    printf("file test: done, all %u MiB written and kept mapped\n", mib);
+    fflush(stdout);
+}
+
+/* BB_IOS_GUARD_TEST=1: can this app release part of the 384 GiB guard reservation
+ * (VM_MEMORY_GUARD, 0x1000000000-0x7000000000) and allocate there? */
+static void guard_test(void) {
+    const vm_address_t at = UINT64_C(0x2000000000);
+    const vm_size_t size = UINT64_C(16) << 30;
+    kern_return_t freed = vm_deallocate(mach_task_self(), at, size);
+    printf("guard test: vm_deallocate 16 GiB at %#llx: %s\n", (unsigned long long)at, mach_error_string(freed));
+    vm_address_t address = at;
+    kern_return_t made = vm_allocate(mach_task_self(), &address, size, VM_FLAGS_FIXED);
+    printf("guard test: vm_allocate there: %s\n", mach_error_string(made));
+    void *p = mmap((void *)at, UINT64_C(1) << 30, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+    printf("guard test: mmap MAP_FIXED 1 GiB there: %s\n", p == MAP_FAILED ? strerror(errno) : "ok");
+    if (p != MAP_FAILED) { ((volatile unsigned char *)p)[0] = 1; printf("guard test: written\n"); }
+    fflush(stdout);
+}
+
 static char documents[1024];
 
 static void *run_game(void *unused) {
@@ -68,7 +114,7 @@ static void *run_game(void *unused) {
     mkdir(user, 0755);
     const char *timeout = getenv("BB_IOS_TIMEOUT");
     char *argv[] = {"bb-probe", boot, "--cpu-only", "--content-profile", content, "--patches", patches,
-                    "--app0", game, "--user", user, "--timeout", (char *)(timeout ? timeout : "120"), NULL};
+                    "--app0", game, "--user", user, "--timeout", (char *)(timeout ? timeout : "300"), NULL};
     printf("iOS PoC: starting the runtime (CPU only)\n");
     int code = bb_probe_main((int)(sizeof(argv) / sizeof(*argv)) - 1, argv);
     printf("iOS PoC: the runtime returned %d\n", code);
@@ -90,9 +136,13 @@ int main(int argc, char **argv) {
     char library[1100];
     snprintf(library, sizeof(library), "%sFrameworks/librecomp.dylib", base ? base : "");
     if (!access(library, R_OK)) setenv("BB_RECOMP_LIB", library, 0);
+    /* No extra direct memory past the PS4's 5056 MiB: it would cost address space (platform.h). */
+    setenv("BB_DMEM_EXTRA_MB", "0", 0);
     printf("iOS PoC: Documents %s, recompiled library %s\n", documents,
            access(library, R_OK) ? "missing (interpreter only)" : library);
     report_address_space();
+    if (getenv("BB_IOS_GUARD_TEST")) guard_test();
+    if (getenv("BB_IOS_FILE_TEST")) file_memory_test((unsigned)strtoul(getenv("BB_IOS_FILE_TEST"), NULL, 10));
     if (getenv("BB_IOS_PROBE_ONLY")) for (;;) { SDL_PumpEvents(); SDL_Delay(100); }
     pthread_attr_t attr;
     pthread_attr_init(&attr);

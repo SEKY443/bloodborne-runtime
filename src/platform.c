@@ -208,8 +208,22 @@ int bb_shared_memory(const char *name, uint64_t size) {
 /* No hole punching in shared memory objects: the pages are cleared through the host view. The
  * memory compressor keeps zero pages almost free. */
 void bb_shared_memory_zero(int fd, unsigned char *view, uint64_t offset, uint64_t size) {
+    if (view) { memset(view+offset,0,size); return; }
+#if TARGET_OS_IPHONE
+    /* iOS (proof of concept): the pool is a file with no host view (runtime_memory.c pool()):
+     * the range becomes a hole, which reads as zeros. */
+    struct fpunchhole hole={.fp_flags=0,.reserved=0,.fp_offset=(off_t)offset,.fp_length=(off_t)size};
+    if (fcntl(fd,F_PUNCHHOLE,&hole)) {
+        static const unsigned char zeros[65536];
+        for (uint64_t done=0;done<size;) {
+            const uint64_t n=size-done<sizeof(zeros) ? size-done : sizeof(zeros);
+            if (pwrite(fd,zeros,n,(off_t)(offset+done))!=(ssize_t)n) break;
+            done+=n;
+        }
+    }
+#else
     (void)fd;
-    if (view) memset(view+offset,0,size);
+#endif
 }
 /* The guest ranges are reserved (PROT_NONE) before any library starts: macOS hands out
  * addresses from the bottom of the address space, so Metal, MoltenVK or the system allocator
