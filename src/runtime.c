@@ -303,6 +303,8 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
     if (audio) return audio;
     uintptr_t pad = runtime_pad_resolve(name);
     if (pad) return pad;
+    uintptr_t libc = runtime_libc_resolve(name);
+    if (libc) return libc;
     uintptr_t rtc = runtime_rtc_resolve(name);
     if (rtc) return rtc;
     uintptr_t save = runtime_savedata_resolve(name);

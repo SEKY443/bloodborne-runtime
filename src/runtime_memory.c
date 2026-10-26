@@ -136,9 +136,10 @@ static void add_region(uint64_t phys, uint64_t size) {
 }
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 /* iOS (proof of concept): direct and flexible memory must fit the game's 5.5 GiB range at their
- * physical offsets (pool(), below); the game uses about 338 MiB of its 448 MiB. */
+ * physical offsets (pool(), below); the game uses about 338 MiB of its 448 MiB. The rest of the
+ * range goes back to the system, which has little address space left (platform.h). */
 #define BB_IOS_IDENTITY 1
-#define FLEX_SPAN (UINT64_C(512) * 1024 * 1024)
+#define FLEX_SPAN (UINT64_C(384) * 1024 * 1024)
 #else
 #define BB_IOS_IDENTITY 0
 #define FLEX_SPAN (UINT64_C(1024) * 1024 * 1024)
@@ -178,6 +179,11 @@ static int pool(void) {
         mmap((void *)USER_MIN,POOL_SIZE+FLEX_SPAN,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_FIXED,pool_fd,0)==MAP_FAILED) {
         fprintf(stderr,"Runtime: the guest memory pool does not fit the game's range\n");
         return -1;
+    }
+    {
+        const uintptr_t tail=USER_MIN+POOL_SIZE+FLEX_SPAN;
+        if (tail<USER_MAX && !munmap((void *)tail,USER_MAX-tail))
+            printf("Runtime: %" PRIu64 " MiB past the guest pool given back to the system\n",(uint64_t)(USER_MAX-tail)>>20);
     }
     backing_base=NULL;
 #else
@@ -843,19 +849,28 @@ void runtime_memory_note_write(uintptr_t address, uint64_t size) {
  * side sets and clears them where it used to protect; the writers it cannot see coming (libc
  * imports, file reads, hooked game code) check them after writing and tell it, as a driver is
  * told of a resource update. */
+#if BB_IOS_IDENTITY
+/* iOS (proof of concept): every guest address lies in [BB_LOW_MIN, BB_USER_MAX) (platform.h), and
+ * the address space is too scarce for tables over all 40 bits: they cover that block only, their
+ * pointers offset so that address>>12 (>>18 for the watch words) still indexes them. */
+#define WATCH_BASE BB_LOW_MIN
+#define WATCH_LIMIT BB_USER_MAX
+#else
+#define WATCH_BASE UINT64_C(0)
 #define WATCH_LIMIT (1ull<<40)
+#endif
 static _Atomic(uint64_t) *write_watch;
 static GpuRange hook_cpu_write;
 void runtime_memory_set_cpu_write_hook(GpuRange hook) {
     if (!write_watch) {
-        void *bits=mmap(NULL,WATCH_LIMIT>>15,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE,-1,0);
+        void *bits=mmap(NULL,(WATCH_LIMIT-WATCH_BASE)>>15,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE,-1,0);
         if (bits==MAP_FAILED) { perror("bbport: write watch bitmap"); return; }
-        write_watch=bits;
+        write_watch=(_Atomic(uint64_t) *)bits-(WATCH_BASE>>18);
     }
     hook_cpu_write=hook;
 }
 void runtime_memory_set_write_watch(uintptr_t address, uint64_t size, int watch) {
-    if (!write_watch || !size || address>=WATCH_LIMIT) return;
+    if (!write_watch || !size || address<WATCH_BASE || address>=WATCH_LIMIT) return;
     uint64_t first=address>>12, last=(address+size-1)>>12;
     if (last>=(WATCH_LIMIT>>12)) last=(WATCH_LIMIT>>12)-1;
     for (uint64_t word=first>>6; word<=last>>6; ++word) {
@@ -866,7 +881,7 @@ void runtime_memory_set_write_watch(uintptr_t address, uint64_t size, int watch)
     }
 }
 void runtime_memory_note_cpu_write(uintptr_t address, uint64_t size) {
-    if (!write_watch || !size || address>=WATCH_LIMIT || address+size>WATCH_LIMIT) return;
+    if (!write_watch || !size || address<WATCH_BASE || address>=WATCH_LIMIT || address+size>WATCH_LIMIT) return;
     const uint64_t first=address>>12, last=(address+size-1)>>12;
     for (uint64_t word=first>>6; word<=last>>6; ++word) {
         const uint64_t lo=word==first>>6 ? first&63 : 0, hi=word==last>>6 ? last&63 : 63;
@@ -884,7 +899,13 @@ void runtime_memory_note_cpu_write(uintptr_t address, uint64_t size) {
  * cache trap the same pages, and one's unprotect must not drop the other's trap. Reasons from 16 up
  * trap reads too (no access: the page's data is newer elsewhere, a VRAM copy). Lock order: the
  * runtime's lock, then trap_mutex (as kernel_mprotect, which keeps the traps). */
+#if BB_IOS_IDENTITY
+#define TRAP_BASE BB_LOW_MIN /* as WATCH_BASE */
+#define TRAP_LIMIT BB_USER_MAX
+#else
+#define TRAP_BASE UINT64_C(0)
 #define TRAP_LIMIT (1ull<<40)
+#endif
 #define TRAP_NO_ACCESS 0xf0u
 static uint8_t *trap_reasons; /* one byte per 4 KiB page below TRAP_LIMIT (reserved, not committed) */
 static pthread_mutex_t trap_mutex=PTHREAD_MUTEX_INITIALIZER;
@@ -902,7 +923,7 @@ static void trap_apply(uintptr_t a, uintptr_t b, int level) {
 }
 /* No traps in [start, end) any more: a mapping replaced or gone (runtime lock held). */
 static void trap_forget(uintptr_t start, uintptr_t end) {
-    if (!trap_reasons || start>=TRAP_LIMIT) return;
+    if (!trap_reasons || start<TRAP_BASE || start>=TRAP_LIMIT) return;
     if (end>TRAP_LIMIT) end=TRAP_LIMIT;
     pthread_mutex_lock(&trap_mutex);
     memset(trap_reasons+(start>>12),0,((end+4095)>>12)-(start>>12));
@@ -911,7 +932,7 @@ static void trap_forget(uintptr_t start, uintptr_t end) {
 /* Pages with traps in [start, end) read-only (or no access) again after the game changed their
  * protection (runtime lock held). */
 static void trap_reapply(uintptr_t start, uintptr_t end) {
-    if (!trap_reasons || start>=TRAP_LIMIT) return;
+    if (!trap_reasons || start<TRAP_BASE || start>=TRAP_LIMIT) return;
     if (end>TRAP_LIMIT) end=TRAP_LIMIT;
     pthread_mutex_lock(&trap_mutex);
     uintptr_t run=0; int run_level=0;
@@ -924,13 +945,14 @@ static void trap_reapply(uintptr_t start, uintptr_t end) {
     pthread_mutex_unlock(&trap_mutex);
 }
 void runtime_memory_trap(uintptr_t address, uint64_t size, unsigned reason, int on) {
-    if (!size || address>=TRAP_LIMIT) return;
+    if (!size || address<TRAP_BASE || address>=TRAP_LIMIT) return;
     if (!trap_reasons) {
-        void *bytes=mmap(NULL,TRAP_LIMIT>>12,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE,-1,0);
+        void *mapped=mmap(NULL,(TRAP_LIMIT-TRAP_BASE)>>12,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE,-1,0);
+        void *bytes=mapped==MAP_FAILED ? MAP_FAILED : (void *)((uint8_t *)mapped-(TRAP_BASE>>12));
         if (bytes==MAP_FAILED) { perror("bbport: write trap table"); return; }
         uint8_t *expected=NULL;
         if (!__atomic_compare_exchange_n(&trap_reasons,&expected,(uint8_t *)bytes,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE))
-            munmap(bytes,TRAP_LIMIT>>12);
+            munmap(mapped,(TRAP_LIMIT-TRAP_BASE)>>12);
     }
     uintptr_t end=address+size>TRAP_LIMIT ? TRAP_LIMIT : address+size;
     read_lock();
@@ -955,7 +977,7 @@ void runtime_memory_trap(uintptr_t address, uint64_t size, unsigned reason, int 
  * Its announcement after the write (runtime_memory_note_cpu_write) stays as it was. */
 void runtime_memory_prepare_cpu_write(uintptr_t address, uint64_t size) {
     const uint8_t *table=__atomic_load_n(&trap_reasons,__ATOMIC_ACQUIRE);
-    if (!table || !size || address>=TRAP_LIMIT || !hook_cpu_write) return;
+    if (!table || !size || address<TRAP_BASE || address>=TRAP_LIMIT || !hook_cpu_write) return;
     uint64_t last=(address+size-1)>>12;
     if (last>=(TRAP_LIMIT>>12)) last=(TRAP_LIMIT>>12)-1;
     for (uint64_t p=address>>12; p<=last; ++p)
@@ -963,7 +985,7 @@ void runtime_memory_prepare_cpu_write(uintptr_t address, uint64_t size) {
 }
 unsigned runtime_memory_trap_reasons(uintptr_t address) {
     const uint8_t *table=__atomic_load_n(&trap_reasons,__ATOMIC_ACQUIRE);
-    return table && address<TRAP_LIMIT ? __atomic_load_n(&table[address>>12],__ATOMIC_ACQUIRE) : 0;
+    return table && address>=TRAP_BASE && address<TRAP_LIMIT ? __atomic_load_n(&table[address>>12],__ATOMIC_ACQUIRE) : 0;
 }
 /* bbport: where direct memory at a guest address lives (BB_GUEST_IN_PLACE: the GPU uses the game's
  * memory where it is): its offset in direct memory and the end of the mapping, which is contiguous

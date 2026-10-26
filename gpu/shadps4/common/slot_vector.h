@@ -272,8 +272,8 @@ private:
     static constexpr std::size_t ChunkBytes = std::size_t{2} << 20;    // 2 MiB committed at a time
 #if defined(__APPLE__) && TARGET_OS_IPHONE
     // iOS (proof of concept, branch ios-poc): the address space outside the game's range is a few
-    // small gaps; 64 MiB still holds tens of thousands of images.
-    static constexpr std::size_t ReservedBytes = std::size_t{64} << 20;
+    // small gaps; 32 MiB still holds thousands of images.
+    static constexpr std::size_t ReservedBytes = std::size_t{32} << 20;
 #else
     static constexpr std::size_t ReservedBytes = std::size_t{1} << 30; // 1 GiB of address space
 #endif

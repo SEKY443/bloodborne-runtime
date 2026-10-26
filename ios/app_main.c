@@ -11,6 +11,8 @@
 #include <SDL3/SDL_main.h>
 
 #include <dlfcn.h>
+/* In libSystem on iOS too, but not in the iOS SDK headers. */
+int proc_regionfilename(int pid, uint64_t address, void *buffer, uint32_t buffersize);
 #include <errno.h>
 #include <execinfo.h>
 #include <signal.h>
@@ -46,6 +48,21 @@ __attribute__((constructor(102))) static void largest_malloc(void) {
     printf("iOS PoC: after the guest reservation the largest malloc is %.0f MiB\n", (double)lo / (1 << 20));
 }
 
+/* The log's pipe, file and console (the first initializer sets them before its thread reads). */
+static volatile int tee_fds[3] = {-1, -1, -1};
+static void *tee_log(void *unused) {
+    (void)unused;
+    while (tee_fds[0] < 0) usleep(1000);
+    char buffer[16384];
+    for (;;) {
+        const ssize_t n = read(tee_fds[0], buffer, sizeof(buffer));
+        if (n <= 0) break;
+        write(tee_fds[1], buffer, (size_t)n);
+        write(tee_fds[2], buffer, (size_t)n);
+    }
+    return NULL;
+}
+
 /* An abort before main (an initializer): its backtrace into the log. */
 static void abort_backtrace(int signal) {
     void *frames[64];
@@ -61,8 +78,18 @@ __attribute__((constructor(100))) static void measure_free_block(void) {
     const char *home = getenv("HOME");
     char log[1100];
     snprintf(log, sizeof(log), "%s/Documents/bb-ios.log", home ? home : ".");
-    if (freopen(log, "w", stdout)) setvbuf(stdout, NULL, _IOLBF, 0);
-    dup2(fileno(stdout), fileno(stderr));
+    /* Into the log file and to the original console too (devicectl ... --console streams it). */
+    static int pipe_fds[2], log_fd, console_fd;
+    log_fd = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    console_fd = dup(2);
+    if (log_fd >= 0 && console_fd >= 0 && !pipe(pipe_fds)) {
+        dup2(pipe_fds[1], 1);
+        dup2(pipe_fds[1], 2);
+        setvbuf(stdout, NULL, _IOLBF, 0);
+        pthread_t tee;
+        if (!pthread_create(&tee, NULL, tee_log, NULL)) pthread_detach(tee);
+        tee_fds[0] = pipe_fds[0]; tee_fds[1] = log_fd; tee_fds[2] = console_fd;
+    }
     printf("iOS PoC: log open (first initializer)\n");
     signal(SIGABRT, abort_backtrace);
     /* The GPU library's paths are made by a static initializer (path_util.cpp: its user folders
@@ -159,6 +186,86 @@ static void guard_test(void) {
     fflush(stdout);
 }
 
+/* Every 10 s: the address space in use outside the game's ranges, by memory tag, and the largest
+ * free gap: what is left for Metal, IOKit and malloc (they fail when it runs out). */
+static void *address_space_report(void *unused) {
+    (void)unused;
+    for (;;) {
+        sleep(10);
+        uint64_t by_tag[256] = {0}, used = 0, largest_gap = 0, previous_end = UINT64_C(0x100000000);
+        vm_address_t at = 0;
+        for (;;) {
+            vm_size_t size = 0;
+            natural_t depth = 0;
+            vm_region_submap_info_data_64_t info;
+            mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+            if (vm_region_recurse_64(mach_task_self(), &at, &size, &depth, (vm_region_recurse_info_t)&info, &count) != KERN_SUCCESS) break;
+            if (at >= UINT64_C(0x180000000) && at < UINT64_C(0x1000000000)) { previous_end = at + size; at += size; continue; } /* shared cache */
+            if (at >= UINT64_C(0x1000000000)) break; /* the guard and the game's ranges */
+            if (at > previous_end && at - previous_end > largest_gap) largest_gap = at - previous_end;
+            by_tag[info.user_tag & 255] += size;
+            used += size;
+            previous_end = at + size;
+            at += size;
+        }
+        printf("Address space: %.0f MiB used below the shared cache, largest free gap %.0f MiB; by tag:", (double)used / (1 << 20),
+               (double)largest_gap / (1 << 20));
+        for (int tag = 0; tag < 256; ++tag)
+            if (by_tag[tag] >= (UINT64_C(16) << 20)) printf(" %d=%.0f", tag, (double)by_tag[tag] / (1 << 20));
+        printf(" MiB\n");
+        /* The busiest threads (CPU use as Mach reports it, 100% = one core) with their names. */
+        thread_act_array_t threads;
+        mach_msg_type_number_t thread_count = 0;
+        if (task_threads(mach_task_self(), &threads, &thread_count) == KERN_SUCCESS) {
+            struct { double use; char name[64]; } busy[10] = {{0}};
+            double total = 0;
+            for (mach_msg_type_number_t t = 0; t < thread_count; ++t) {
+                thread_extended_info_data_t info;
+                mach_msg_type_number_t count = THREAD_EXTENDED_INFO_COUNT;
+                if (thread_info(threads[t], THREAD_EXTENDED_INFO, (thread_info_t)&info, &count) == KERN_SUCCESS) {
+                    const double use = info.pth_cpu_usage / 10.0;
+                    total += use;
+                    for (int i = 0; i < 10; ++i)
+                        if (use > busy[i].use) {
+                            memmove(&busy[i + 1], &busy[i], (9 - i) * sizeof(busy[0]));
+                            busy[i].use = use;
+                            snprintf(busy[i].name, sizeof(busy[i].name), "%s", info.pth_name);
+                            break;
+                        }
+                }
+                mach_port_deallocate(mach_task_self(), threads[t]);
+            }
+            vm_deallocate(mach_task_self(), (vm_address_t)threads, thread_count * sizeof(*threads));
+            printf("Threads: %u, %.0f%% CPU in all; busiest:", thread_count, total);
+            for (int i = 0; i < 10 && busy[i].use >= 1.0; ++i) printf(" [%s] %.0f%%", busy[i].name[0] ? busy[i].name : "?", busy[i].use);
+            printf("\n");
+        }
+        /* The largest regions below the shared cache, with the file mapped there if any. */
+        struct { uint64_t start, size; unsigned tag; } top[8] = {{0}};
+        for (vm_address_t a = 0;;) {
+            vm_size_t size = 0;
+            natural_t depth = 0;
+            vm_region_submap_info_data_64_t info;
+            mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+            if (vm_region_recurse_64(mach_task_self(), &a, &size, &depth, (vm_region_recurse_info_t)&info, &count) != KERN_SUCCESS || a >= UINT64_C(0x180000000)) break;
+            for (int i = 0; i < 8; ++i)
+                if (size > top[i].size) {
+                    memmove(&top[i + 1], &top[i], (7 - i) * sizeof(top[0]));
+                    top[i].start = a; top[i].size = size; top[i].tag = info.user_tag;
+                    break;
+                }
+            a += size;
+        }
+        for (int i = 0; i < 8 && top[i].size; ++i) {
+            char name[1024] = "";
+            proc_regionfilename(getpid(), top[i].start, name, sizeof(name));
+            printf("  %#llx %.0f MiB tag %u %s\n", (unsigned long long)top[i].start, (double)top[i].size / (1 << 20), top[i].tag, name);
+        }
+        fflush(stdout);
+    }
+    return NULL;
+}
+
 static char documents[1024];
 
 static void *run_game(void *unused) {
@@ -168,7 +275,9 @@ static void *run_game(void *unused) {
     snprintf(content, sizeof(content), "%s/content.bin", documents);
     snprintf(patches, sizeof(patches), "%s/patches.bin", documents);
     snprintf(game, sizeof(game), "%s/game", documents);
-    snprintf(user, sizeof(user), "%s/user", documents);
+    /* BB_IOS_SAVE=mac-save: the Mac save copied to Documents/mac-save; otherwise Documents/user. */
+    const char *save = getenv("BB_IOS_SAVE");
+    snprintf(user, sizeof(user), "%s/%s", documents, save && *save && strcmp(save, "0") ? save : "user");
     mkdir(user, 0755);
     const char *timeout = getenv("BB_IOS_TIMEOUT");
     const int cpu_only = switch_on("BB_IOS_CPU_ONLY");
@@ -200,6 +309,10 @@ int main(int argc, char **argv) {
     }
     /* No extra direct memory past the PS4's 5056 MiB: it would cost address space (platform.h). */
     setenv("BB_DMEM_EXTRA_MB", "0", 0);
+    /* 4608 MiB of direct memory instead of the PS4's 5056: the game allocates about 4589 MiB at
+     * start (gameplay checked on the Mac at 4608), and the 448 MiB go back to the system's
+     * address space, which ran out when gameplay loaded. */
+    setenv("BB_DMEM_MB", "4608", 0);
     /* What run.sh sets on Apple Silicon (the native Metal frame, the 0.3 memory model, copies of
      * GPU buffers at submit, write twins, a 60 Hz vblank), the saves and settings in Documents,
      * English, frame statistics in the log, and the test banner every test run shows. */
@@ -209,6 +322,10 @@ int main(int argc, char **argv) {
     /* tools/grab.sh's frame dumps: the game's own frame when Documents/grab.trigger appears. */
     snprintf(grab_trigger, sizeof(grab_trigger), "%s/grab.trigger", documents);
     snprintf(grab_dir, sizeof(grab_dir), "%s/grab", documents);
+    char pad_file[1100];
+    snprintf(pad_file, sizeof(pad_file), "%s/pad", documents);
+    FILE *pad = fopen(pad_file, "w"); /* empty: nothing held */
+    if (pad) fclose(pad);
     mkdir(grab_dir, 0755);
     const char *defaults[][2] = {
         {"BB_METAL_FRAME", "1"}, {"BB_METAL_NATIVE_BOOT", "1"}, {"BB_GFX_BACKEND", "metal"},
@@ -217,6 +334,13 @@ int main(int argc, char **argv) {
         {"BB_VBLANK_HZ", "60"}, {"BB_LANGUAGE", "1"}, {"BB_UI_LANGUAGE", "en"}, {"BB_FRAME_STATS", "1"},
         {"BB_GPU_USER_DIR", user_dir}, {"BB_CONFIG", config},
         {"BB_UI_SCALE", "1.75"},
+        {"BB_PAD_FILE", pad_file}, /* scripts/ios/press.sh: buttons pressed from the Mac */
+        /* One Metal buffer over guest memory: the Mac's overlapping windows (a MoltenVK
+         * workaround) pinned 512 MiB twice, and pinned memory got the app killed. */
+        {"BB_POOL_SPLIT", "0"},
+        /* 960x540 for now (the patches.bin copied over is made for it): a quarter of 1080p's
+         * targets, memory and address space. */
+        {"BB_RENDER_RES", "960x540"}, {"BB_OUTPUT_RES", "960x540"}, {"BB_AUTO_RENDER_RES", "1"},
         {"BB_PRESENT_DUMP_TRIGGER", grab_trigger}, {"BB_DUMP_DIR", grab_dir},
         {"BB_TEST_TITLE", "iOS PoC P2: Metal on the iPhone"},
         {"BB_TEST_DETAIL", "Native 1080p, recompiled library, no JIT, file-backed guest memory"},
@@ -240,6 +364,8 @@ int main(int argc, char **argv) {
     if (switch_on("BB_IOS_METAL_TEST")) bb_ios_metal_test((unsigned)strtoul(getenv("BB_IOS_METAL_TEST"), NULL, 10));
     if (switch_on("BB_IOS_FILE_TEST")) file_memory_test((unsigned)strtoul(getenv("BB_IOS_FILE_TEST"), NULL, 10));
     if (switch_on("BB_IOS_PROBE_ONLY")) for (;;) { SDL_PumpEvents(); SDL_Delay(100); }
+    pthread_t reporter;
+    if (!pthread_create(&reporter, NULL, address_space_report, NULL)) pthread_detach(reporter);
     if (!switch_on("BB_IOS_CPU_ONLY")) {
         /* The probe on the main thread: it makes the window there and keeps pumping its events
          * (bbgpu_window_loop), as UIKit requires; the game runs on the probe's own thread. */
