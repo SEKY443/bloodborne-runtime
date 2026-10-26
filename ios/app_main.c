@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 int bb_probe_main(int argc, char **argv);
+void bb_ios_metal_test(unsigned mib); /* metal_test.m */
 
 /* Before anything else allocates (and before platform.c reserves the guest ranges, priority
  * 101): the largest fixed reservation from 0x7000000000, i.e. where the free block ends. */
@@ -158,6 +159,7 @@ int main(int argc, char **argv) {
            access(library, R_OK) ? "missing (interpreter only)" : library);
     report_address_space();
     if (getenv("BB_IOS_GUARD_TEST")) guard_test();
+    if (getenv("BB_IOS_METAL_TEST")) bb_ios_metal_test((unsigned)strtoul(getenv("BB_IOS_METAL_TEST"), NULL, 10));
     if (getenv("BB_IOS_FILE_TEST")) file_memory_test((unsigned)strtoul(getenv("BB_IOS_FILE_TEST"), NULL, 10));
     if (getenv("BB_IOS_PROBE_ONLY")) for (;;) { SDL_PumpEvents(); SDL_Delay(100); }
     pthread_attr_t attr;

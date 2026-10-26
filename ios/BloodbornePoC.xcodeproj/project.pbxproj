@@ -8,10 +8,12 @@
 
 /* Begin PBXBuildFile section */
 		B0000000000000000000A001 /* app_main.c in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000F001 /* app_main.c */; };
+		B0000000000000000000A003 /* metal_test.m in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000F004 /* metal_test.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		B0000000000000000000F001 /* app_main.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = app_main.c; sourceTree = "<group>"; };
+		B0000000000000000000F004 /* metal_test.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = metal_test.m; sourceTree = "<group>"; };
 		B0000000000000000000F003 /* BloodbornePoC.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BloodbornePoC.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -30,6 +32,7 @@
 			isa = PBXGroup;
 			children = (
 				B0000000000000000000F001 /* app_main.c */,
+				B0000000000000000000F004 /* metal_test.m */,
 				B0000000000000000000D002 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -113,6 +116,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B0000000000000000000A001 /* app_main.c in Sources */,
+				B0000000000000000000A003 /* metal_test.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
