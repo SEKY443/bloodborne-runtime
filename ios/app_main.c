@@ -10,7 +10,10 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
+#include <dlfcn.h>
 #include <errno.h>
+#include <execinfo.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <mach/mach.h>
@@ -23,13 +26,51 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* A test switch: set and not "0" or empty (devicectl keeps an app's earlier launch variables). */
+static int switch_on(const char *name) { const char *v = getenv(name); return v && *v && *v != '0'; }
+
 int bb_probe_main(int argc, char **argv);
 void bb_ios_metal_test(unsigned mib); /* metal_test.m */
 
 /* Before anything else allocates (and before platform.c reserves the guest ranges, priority
  * 101): the largest fixed reservation from 0x7000000000, i.e. where the free block ends. */
 static uint64_t early_free_end;
+/* After platform.c reserved the guest ranges (priority 101): the largest malloc left. */
+__attribute__((constructor(102))) static void largest_malloc(void) {
+    size_t lo = 0, hi = (size_t)8 << 30;
+    while (hi - lo > (1 << 20)) {
+        const size_t mid = lo + (hi - lo) / 2;
+        void *p = malloc(mid);
+        if (p) { free(p); lo = mid; } else hi = mid;
+    }
+    printf("iOS PoC: after the guest reservation the largest malloc is %.0f MiB\n", (double)lo / (1 << 20));
+}
+
+/* An abort before main (an initializer): its backtrace into the log. */
+static void abort_backtrace(int signal) {
+    void *frames[64];
+    const int count = backtrace(frames, 64);
+    dprintf(2, "iOS PoC: signal %d; backtrace:\n", signal);
+    backtrace_symbols_fd(frames, count, 2);
+    _exit(128 + signal);
+}
+
 __attribute__((constructor(100))) static void measure_free_block(void) {
+    /* The log first, before every other initializer: messages from those (libc++'s "terminating
+     * due to ...") go to stderr. */
+    const char *home = getenv("HOME");
+    char log[1100];
+    snprintf(log, sizeof(log), "%s/Documents/bb-ios.log", home ? home : ".");
+    if (freopen(log, "w", stdout)) setvbuf(stdout, NULL, _IOLBF, 0);
+    dup2(fileno(stdout), fileno(stderr));
+    printf("iOS PoC: log open (first initializer)\n");
+    signal(SIGABRT, abort_backtrace);
+    /* The GPU library's paths are made by a static initializer (path_util.cpp: its user folders
+     * under BB_GPU_USER_DIR, else under the working directory, "/" before main): set before it. */
+    char user[1100];
+    snprintf(user, sizeof(user), "%s/Documents/user", home ? home : ".");
+    mkdir(user, 0755);
+    setenv("BB_GPU_USER_DIR", user, 0);
     for (uint64_t size = UINT64_C(8) << 30; size >= (UINT64_C(256) << 20); size -= UINT64_C(64) << 20) {
         vm_address_t start = (vm_address_t)UINT64_C(0x7000000000);
         if (vm_allocate(mach_task_self(), &start, size, VM_FLAGS_FIXED) == KERN_SUCCESS) {
@@ -130,10 +171,13 @@ static void *run_game(void *unused) {
     snprintf(user, sizeof(user), "%s/user", documents);
     mkdir(user, 0755);
     const char *timeout = getenv("BB_IOS_TIMEOUT");
-    char *argv[] = {"bb-probe", boot, "--cpu-only", "--content-profile", content, "--patches", patches,
-                    "--app0", game, "--user", user, "--timeout", (char *)(timeout ? timeout : "300"), NULL};
-    printf("iOS PoC: starting the runtime (CPU only)\n");
-    int code = bb_probe_main((int)(sizeof(argv) / sizeof(*argv)) - 1, argv);
+    const int cpu_only = switch_on("BB_IOS_CPU_ONLY");
+    char *argv[] = {"bb-probe", boot, "--content-profile", content, "--patches", patches, "--app0", game,
+                    "--user", user, "--timeout", (char *)(timeout ? timeout : "0"), cpu_only ? "--cpu-only" : NULL, NULL};
+    printf("iOS PoC: starting the runtime (%s)\n", cpu_only ? "CPU only" : "Metal");
+    int argc = 0;
+    while (argv[argc]) ++argc;
+    int code = bb_probe_main(argc, argv);
     printf("iOS PoC: the runtime returned %d\n", code);
     fflush(NULL);
     exit(code);
@@ -144,24 +188,56 @@ int main(int argc, char **argv) {
     const char *home = getenv("HOME");
     snprintf(documents, sizeof(documents), "%s/Documents", home ? home : ".");
     if (chdir(documents)) return 1;
-    char log[1100];
-    snprintf(log, sizeof(log), "%s/bb-ios.log", documents);
-    if (freopen(log, "w", stdout)) setvbuf(stdout, NULL, _IOLBF, 0);
-    dup2(fileno(stdout), fileno(stderr));
     /* The recompiled library inside the app; the translator's JIT is compiled out on iOS. */
     const char *base = SDL_GetBasePath();
     char library[1100];
     snprintf(library, sizeof(library), "%sFrameworks/librecomp.dylib", base ? base : "");
-    if (!access(library, R_OK)) setenv("BB_RECOMP_LIB", library, 0);
+    if (!access(library, R_OK)) {
+        setenv("BB_RECOMP_LIB", library, 0);
+        /* Loaded now, while the address space still has a gap of its size (about 400 MB): the
+         * renderer's allocations take the gaps later. The runtime's own dlopen finds it loaded. */
+        if (!dlopen(library, RTLD_NOW | RTLD_LOCAL)) printf("iOS PoC: early dlopen failed: %s\n", dlerror());
+    }
     /* No extra direct memory past the PS4's 5056 MiB: it would cost address space (platform.h). */
     setenv("BB_DMEM_EXTRA_MB", "0", 0);
+    /* What run.sh sets on Apple Silicon (the native Metal frame, the 0.3 memory model, copies of
+     * GPU buffers at submit, write twins, a 60 Hz vblank), the saves and settings in Documents,
+     * English, frame statistics in the log, and the test banner every test run shows. */
+    char user_dir[1100], config[1100], grab_trigger[1100], grab_dir[1100];
+    snprintf(user_dir, sizeof(user_dir), "%s/user", documents);
+    snprintf(config, sizeof(config), "%s/bbport.ini", documents);
+    /* tools/grab.sh's frame dumps: the game's own frame when Documents/grab.trigger appears. */
+    snprintf(grab_trigger, sizeof(grab_trigger), "%s/grab.trigger", documents);
+    snprintf(grab_dir, sizeof(grab_dir), "%s/grab", documents);
+    mkdir(grab_dir, 0755);
+    const char *defaults[][2] = {
+        {"BB_METAL_FRAME", "1"}, {"BB_METAL_NATIVE_BOOT", "1"}, {"BB_GFX_BACKEND", "metal"},
+        {"BB_PC_MODEL", "0"}, {"BB_GUEST_IN_PLACE", "0"}, {"BB_UFFD", "0"}, {"BB_PREUPLOAD", "1"},
+        {"BB_COPY_GPU_BUFFERS", "1"}, {"BB_GPU_WRITE_TWINS", "1"}, {"BB_GPU_WRITE_TWINS_MAX", "65536"},
+        {"BB_VBLANK_HZ", "60"}, {"BB_LANGUAGE", "1"}, {"BB_UI_LANGUAGE", "en"}, {"BB_FRAME_STATS", "1"},
+        {"BB_GPU_USER_DIR", user_dir}, {"BB_CONFIG", config},
+        {"BB_PRESENT_DUMP_TRIGGER", grab_trigger}, {"BB_DUMP_DIR", grab_dir},
+        {"BB_TEST_TITLE", "iOS PoC P2: Metal on the iPhone"},
+        {"BB_TEST_DETAIL", "Native 1080p, recompiled library, no JIT, file-backed guest memory"},
+    };
+    for (size_t i = 0; i < sizeof(defaults) / sizeof(*defaults); ++i) setenv(defaults[i][0], defaults[i][1], 0);
+    /* A first bbport.ini: the FPS counter on, large (the test runs' setting). */
+    if (access(config, F_OK)) {
+        FILE *ini = fopen(config, "w");
+        if (ini) { fputs("show_fps=1\nfps_size=big\n", ini); fclose(ini); }
+    }
     printf("iOS PoC: Documents %s, recompiled library %s\n", documents,
            access(library, R_OK) ? "missing (interpreter only)" : library);
     report_address_space();
-    if (getenv("BB_IOS_GUARD_TEST")) guard_test();
-    if (getenv("BB_IOS_METAL_TEST")) bb_ios_metal_test((unsigned)strtoul(getenv("BB_IOS_METAL_TEST"), NULL, 10));
-    if (getenv("BB_IOS_FILE_TEST")) file_memory_test((unsigned)strtoul(getenv("BB_IOS_FILE_TEST"), NULL, 10));
-    if (getenv("BB_IOS_PROBE_ONLY")) for (;;) { SDL_PumpEvents(); SDL_Delay(100); }
+    if (switch_on("BB_IOS_GUARD_TEST")) guard_test();
+    if (switch_on("BB_IOS_METAL_TEST")) bb_ios_metal_test((unsigned)strtoul(getenv("BB_IOS_METAL_TEST"), NULL, 10));
+    if (switch_on("BB_IOS_FILE_TEST")) file_memory_test((unsigned)strtoul(getenv("BB_IOS_FILE_TEST"), NULL, 10));
+    if (switch_on("BB_IOS_PROBE_ONLY")) for (;;) { SDL_PumpEvents(); SDL_Delay(100); }
+    if (!switch_on("BB_IOS_CPU_ONLY")) {
+        /* The probe on the main thread: it makes the window there and keeps pumping its events
+         * (bbgpu_window_loop), as UIKit requires; the game runs on the probe's own thread. */
+        run_game(NULL);
+    }
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 64u << 20);

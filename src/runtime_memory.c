@@ -134,7 +134,15 @@ static void add_region(uint64_t phys, uint64_t size) {
     regions[i]=(Region){phys,size,fd>=0 || fd==CHUNK_IMPORTED ? fd : -2};
     ++region_count;
 }
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+/* iOS (proof of concept): direct and flexible memory must fit the game's 5.5 GiB range at their
+ * physical offsets (pool(), below); the game uses about 338 MiB of its 448 MiB. */
+#define BB_IOS_IDENTITY 1
+#define FLEX_SPAN (UINT64_C(512) * 1024 * 1024)
+#else
+#define BB_IOS_IDENTITY 0
 #define FLEX_SPAN (UINT64_C(1024) * 1024 * 1024)
+#endif
 static uint64_t flex_bitmap[FLEX_SPAN/PAGE/64];
 /* GPU hooks (bbgpu): notified outside the lock, in order, after each operation. */
 typedef void (*GpuRange)(uintptr_t address, uint64_t size);
@@ -150,17 +158,27 @@ static int valid_alignment(uint64_t a) { return a >= PAGE && a <= POOL_SIZE && !
 static uint64_t align_up(uint64_t n, uint64_t a) { return (n+a-1) & ~(a-1); }
 static int host_prot(int prot) {
     /* GPU read/write bits (0x10/0x20) need host access for the future GPU backend. */
-    return ((prot & 0x11) ? PROT_READ : 0) | ((prot & 0x22) ? PROT_WRITE|PROT_READ : 0) | ((prot & 4) ? PROT_EXEC|PROT_READ : 0);
+    /* iOS (proof of concept): guest code is never run natively; execute would be refused. */
+    return ((prot & 0x11) ? PROT_READ : 0) | ((prot & 0x22) ? PROT_WRITE|PROT_READ : 0) |
+           ((prot & 4) ? (BB_IOS_IDENTITY ? 0 : PROT_EXEC)|PROT_READ : 0);
 }
 /* Direct memory occupies [0,POOL_SIZE) of the memfd, flexible memory [POOL_SIZE,+FLEX_SPAN). */
 static int pool(void) {
     if (pool_fd>=0) return 0;
     pool_fd=bb_shared_memory("bb-guest-memory",POOL_SIZE+FLEX_SPAN);
     if (pool_fd<0) return -1;
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-    /* iOS (proof of concept): no second view, the app has 8 GiB of address space in all
-     * (platform.h). The pool is a file there: clears punch holes in it, host writes and reads
-     * use pwrite and pread. */
+#if BB_IOS_IDENTITY
+    /* iOS (proof of concept): no room for a second view (platform.h). The game's range is the
+     * view: the whole pool is mapped there once, physical offset X at USER_MIN+X, and the game's
+     * mappings are placed at their physical offset (place()), so they only change protection.
+     * The GPU imports this range (runtime_memory_pool_view) as it imports the view on macOS.
+     * The runtime's own clears, writes and reads go through the file (hole punching, pwrite,
+     * pread): guest protection may forbid them at these addresses. */
+    if (POOL_SIZE+FLEX_SPAN>USER_MAX-USER_MIN ||
+        mmap((void *)USER_MIN,POOL_SIZE+FLEX_SPAN,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_FIXED,pool_fd,0)==MAP_FAILED) {
+        fprintf(stderr,"Runtime: the guest memory pool does not fit the game's range\n");
+        return -1;
+    }
     backing_base=NULL;
 #else
     void *view=mmap(NULL,POOL_SIZE+FLEX_SPAN,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_NORESERVE,pool_fd,0);
@@ -383,9 +401,26 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
         if (address<USER_MIN || address>USER_MAX || size>USER_MAX-address) return INVALID;
 #endif
         if ((flags & MAP_NO_OVERWRITE) && overlaps(address,address+size,1)) return NO_MEMORY;
+    } else if (BB_IOS_IDENTITY && kind!=KIND_RESERVED) {
+        /* iOS: at the physical offset (pool()); the pool is already mapped there. */
+        address=USER_MIN+phys;
+        if ((alignment && address%alignment) || overlaps(address,address+size,1)) {
+            fprintf(stderr,"Runtime: %#" PRIx64 "+%#" PRIx64 " cannot be placed at its physical offset\n",phys,size);
+            return NO_MEMORY;
+        }
     } else {
         address=find_free(address,size,alignment);
         if (!address) return NO_MEMORY;
+    }
+    if (BB_IOS_IDENTITY && kind!=KIND_RESERVED && address==USER_MIN+phys) {
+        if (mprotect((void *)address,size,host_prot(prot))) return NO_MEMORY;
+        drop_range(address,address+size);
+        trap_forget(address,address+size);
+        if (vma_insert(vma_index(address),(Vma){address,address+size,kind,prot,type,phys})) return NO_MEMORY;
+        if (kind==KIND_FLEXIBLE) flexible_bytes+=size;
+        queue_hook(HOOK_MAP,address,size);
+        *inout=(void *)address;
+        return 0;
     }
     void *mapped = kind!=KIND_RESERVED
         ? map_phys(address,size,host_prot(prot),phys)
@@ -508,7 +543,10 @@ static int32_t unmap_locked(uintptr_t start, uint64_t size) {
         }
     for (size_t i=vma_index(start); i<vma_count && vmas[i].start<end; ++i) {
         uintptr_t a=vmas[i].start>start ? vmas[i].start : start, b=vmas[i].end<end ? vmas[i].end : end;
-        if (bb_unmap_guest(a,b-a)) return INVALID;
+        if (BB_IOS_IDENTITY && vmas[i].kind!=KIND_RESERVED) {
+            /* iOS: the pool stays mapped (pool()); only access goes. */
+            if (mprotect((void *)a,b-a,PROT_NONE)) return INVALID;
+        } else if (bb_unmap_guest(a,b-a)) return INVALID;
     }
     drop_range(start,end);
     trap_forget(start,end);
@@ -960,7 +998,7 @@ int runtime_memory_pool_phys(uintptr_t address, uint64_t *phys, uintptr_t *end) 
 int runtime_memory_pool_view(void **base, uint64_t *size) {
     write_lock();
     const int ok=!pool();
-    if (ok) { *base=backing_base; *size=POOL_SIZE+FLEX_SPAN; }
+    if (ok) { *base=BB_IOS_IDENTITY ? (void *)USER_MIN : backing_base; *size=POOL_SIZE+FLEX_SPAN; }
     write_unlock();
     return ok;
 }

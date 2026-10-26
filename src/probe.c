@@ -117,6 +117,11 @@ static void protect(void *p, size_t size, unsigned flags) {
     FlushInstructionCache(GetCurrentProcess(), p, size);
 #else
     int mode = ((flags & 4) ? PROT_READ : 0) | ((flags & 2) ? PROT_WRITE : 0) | ((flags & 1) ? PROT_EXEC : 0);
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    /* iOS (proof of concept): the game's code never runs natively (bbcpu and the recompiled
+     * library), and iOS refuses execute on pages written after they were executable. */
+    if (flags & 1) mode = (mode & ~PROT_EXEC) | PROT_READ;
+#endif
     if (mprotect(p, size, mode)) fail("mprotect failed");
 #endif
 }

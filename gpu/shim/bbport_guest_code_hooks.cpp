@@ -10,6 +10,9 @@
 // the game's code (their area is a guest code range), and the recompiled library leaves the
 // hooked functions to the translator (their bytes changed).
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include "bbport_guest_code_hooks.h"
 
 #include <signal.h>
@@ -257,7 +260,10 @@ void InstallTrapHandler() {
 } // namespace
 
 int GuestCodeProtection() {
-#if defined(__APPLE__)
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // iOS (proof of concept): bbcpu only reads the game's code; execute would be refused.
+    return code_writable.load(std::memory_order_acquire) ? PROT_READ | PROT_WRITE : PROT_READ;
+#elif defined(__APPLE__)
     // bbcpu reads the game's code; it never runs natively (no writable and executable pages).
     return code_writable.load(std::memory_order_acquire) ? PROT_READ | PROT_WRITE : PROT_READ | PROT_EXEC;
 #else

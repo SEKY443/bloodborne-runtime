@@ -4,6 +4,9 @@
 #pragma once
 
 #include <cstdlib>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -267,7 +270,13 @@ private:
     }
 
     static constexpr std::size_t ChunkBytes = std::size_t{2} << 20;    // 2 MiB committed at a time
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // iOS (proof of concept, branch ios-poc): the address space outside the game's range is a few
+    // small gaps; 64 MiB still holds tens of thousands of images.
+    static constexpr std::size_t ReservedBytes = std::size_t{64} << 20;
+#else
     static constexpr std::size_t ReservedBytes = std::size_t{1} << 30; // 1 GiB of address space
+#endif
     static_assert(sizeof(Entry) <= ChunkBytes);
     // All supported hosts provide at least 4 KiB alignment for page reservations.
     static_assert(alignof(Entry) <= 4096);

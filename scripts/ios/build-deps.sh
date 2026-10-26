@@ -27,4 +27,33 @@ package zycore "$src/zydis/dependencies/zycore" -DZYCORE_BUILD_SHARED_LIB=OFF
 # As in the macOS script: the installed Zycore target may lack its include directory.
 package zydis "$src/zydis" -DZYAN_SYSTEM_ZYCORE=ON -DZYDIS_BUILD_SHARED_LIB=OFF -DCMAKE_C_FLAGS="-I$prefix/include" \
     -DZYDIS_BUILD_TOOLS=OFF -DZYDIS_BUILD_EXAMPLES=OFF -DZYDIS_BUILD_DOXYGEN=OFF
+# The GPU library's (gpu/CMakeLists.txt), with the macOS script's options.
+package vulkan-headers "$src/vulkan-headers"
+package spirv-cross "$src/spirv-cross" -DSPIRV_CROSS_SHARED=OFF -DSPIRV_CROSS_STATIC=ON -DSPIRV_CROSS_CLI=OFF \
+    -DSPIRV_CROSS_ENABLE_TESTS=OFF -DSPIRV_CROSS_ENABLE_HLSL=OFF -DSPIRV_CROSS_ENABLE_CPP=OFF \
+    -DSPIRV_CROSS_ENABLE_REFLECT=OFF -DSPIRV_CROSS_ENABLE_C_API=OFF -DSPIRV_CROSS_ENABLE_UTIL=OFF
+package fmt "$src/fmt" -DFMT_TEST=OFF -DFMT_DOC=OFF
+package magic-enum "$src/magic-enum" -DMAGIC_ENUM_OPT_BUILD_EXAMPLES=OFF -DMAGIC_ENUM_OPT_BUILD_TESTS=OFF
+package robin-map "$src/robin-map"
+package xbyak "$src/xbyak"
+package vma "$src/vma"
+package miniz "$src/miniz" -DBUILD_EXAMPLES=OFF -DBUILD_FUZZERS=OFF -DBUILD_TESTS=OFF
+package xxhash "$src/xxhash/cmake_unofficial" -DXXHASH_BUILD_XXHSUM=OFF
+package boost "$src/boost" -DBOOST_INCLUDE_LIBRARIES='asio;container;container_hash;icl;intrusive;pool;preprocessor' \
+    -DBOOST_SKIP_INSTALL_RULES=OFF -DBOOST_CONTEXT_ARCHITECTURE=arm64 -DBOOST_CONTEXT_ABI=aapcs
+# FFmpeg (AvPlayer, the game's movies): static, in a clean copy of its sources (the macOS build
+# configured the original in place, and FFmpeg then refuses out-of-tree builds).
+if [[ ! -f $work/ffmpeg.done ]]; then
+    echo "== ffmpeg"
+    sdk=$(xcrun -sdk iphoneos --show-sdk-path)
+    rm -rf "$work/ffmpeg" && cp -R "$src/ffmpeg" "$work/ffmpeg"
+    (cd "$work/ffmpeg" && { make distclean >/dev/null 2>&1 || true; } && ./configure --prefix="$prefix" --enable-cross-compile --arch=aarch64 \
+        --target-os=darwin --cc="$(xcrun -sdk iphoneos -f clang)" --sysroot="$sdk" \
+        --extra-cflags="-arch arm64 -miphoneos-version-min=18.0" \
+        --extra-ldflags="-arch arm64 -miphoneos-version-min=18.0" \
+        --enable-static --disable-shared --disable-programs --disable-doc --disable-avdevice \
+        --disable-avfilter --disable-network --disable-autodetect --enable-videotoolbox >/dev/null &&
+        make -j "$jobs" >/dev/null && make install >/dev/null)
+    touch "$work/ffmpeg.done"
+fi
 echo "iOS dependencies: $prefix"

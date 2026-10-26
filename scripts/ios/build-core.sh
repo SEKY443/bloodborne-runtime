@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # iOS proof of concept (branch ios-poc): the runtime (loader, system libraries, bbcpu, LibAtrac9)
-# for arm64 iPhones as out/ios/libbbios.a, with ios/bbgpu_stub.c in place of the GPU library
-# (milestone P1, --cpu-only). bb-probe's main becomes bb_probe_main, called by ios/app_main.c.
+# for arm64 iPhones as out/ios/libbbios.a; BB_IOS_GPU=0 adds ios/bbgpu_stub.c in place of the GPU
+# library (milestone P1, --cpu-only). bb-probe's main becomes bb_probe_main, called by ios/app_main.c.
 # Needs scripts/ios/build-deps.sh first.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -14,7 +14,8 @@ compile() { # compile SOURCE FLAGS...: one object in $obj
     local source=$1; shift
     "${cc[@]}" "$@" -c "$source" -o "$obj/$(basename "$source").o"
 }
-for source in src/probe.c src/runtime*.c src/platform.c src/vulkan_smoke.c ios/bbgpu_stub.c; do
+stub=(); [[ ${BB_IOS_GPU:-1} == 0 ]] && stub=(ios/bbgpu_stub.c)
+for source in src/probe.c src/runtime*.c src/platform.c src/vulkan_smoke.c "${stub[@]}"; do
     compile "$source" -std=c11 -O2 -g -Wall -Wextra -Werror -Wno-unknown-warning-option \
         -Wno-unused-but-set-global -pthread -Dmain=bb_probe_main -I"$deps/include" -I. -Isrc -Irecomp/src
 done
