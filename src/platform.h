@@ -118,14 +118,16 @@ extern "C" {
  * heap on macOS). [BB_USER_MIN, BB_USER_MAX): the game's own mappings. Under Rosetta 2 the range
  * [0xfc0000000, 0x7000000000) cannot be mapped, so the game's range starts at 448 GiB there. */
 #if defined(BB_MACOS) && TARGET_OS_IPHONE
-/* iOS (proof of concept, branch ios-poc): without the extended-virtual-addressing entitlement an
- * app's map ends at 0x7200000000 and only [0x7000000000, 0x7200000000) is free for large
- * mappings (the shared cache and a permanent 384 GiB guard hold the rest). The low range takes
- * its first GiB, the game's range 6 GiB above it; the last GiB stays for the system. */
+/* iOS (proof of concept, branch ios-poc): without the extended-virtual-addressing entitlement
+ * the only block free for large mappings at start is [0x7000000000, 0x7180000000), 6 GiB (the
+ * shared cache and a permanent 384 GiB guard hold the rest; measured on an iPhone 17 Pro Max).
+ * The low range takes 512 MiB (image, import stubs, guest stacks, the runtime's heap), the
+ * game's range the remaining 5.5 GiB: its 5056 MiB of direct memory and 448 MiB of flexible
+ * memory, with 128 MiB to spare. */
 #define BB_LOW_MIN UINT64_C(0x7000000000)
-#define BB_LOW_MAX UINT64_C(0x7040000000)
-#define BB_USER_MIN UINT64_C(0x7040000000)
-#define BB_USER_MAX UINT64_C(0x71c0000000)
+#define BB_LOW_MAX UINT64_C(0x7020000000)
+#define BB_USER_MIN UINT64_C(0x7020000000)
+#define BB_USER_MAX UINT64_C(0x7180000000)
 #elif defined(BB_MACOS) && defined(__aarch64__)
 /* Native arm64 macOS: [0x180000000, 0x7000000000) is the shared region and the host's own
  * allocations start at 0x7000000000 (the GPU driver reserves ~24 GiB there before main), so the

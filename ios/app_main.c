@@ -25,6 +25,20 @@
 
 int bb_probe_main(int argc, char **argv);
 
+/* Before anything else allocates (and before platform.c reserves the guest ranges, priority
+ * 101): the largest fixed reservation from 0x7000000000, i.e. where the free block ends. */
+static uint64_t early_free_end;
+__attribute__((constructor(100))) static void measure_free_block(void) {
+    for (uint64_t size = UINT64_C(8) << 30; size >= (UINT64_C(256) << 20); size -= UINT64_C(64) << 20) {
+        vm_address_t start = (vm_address_t)UINT64_C(0x7000000000);
+        if (vm_allocate(mach_task_self(), &start, size, VM_FLAGS_FIXED) == KERN_SUCCESS) {
+            vm_deallocate(mach_task_self(), start, size);
+            early_free_end = UINT64_C(0x7000000000) + size;
+            return;
+        }
+    }
+}
+
 /* Which parts of the address space iOS lets this app reserve (the guest layout must fit there):
  * a 1 GiB fixed reservation tried every 8 GiB up to 1 TiB, then released. */
 static void report_address_space(void) {
@@ -53,6 +67,8 @@ static void report_address_space(void) {
         at += size;
     }
     printf("  end of the map at %#llx\n", (unsigned long long)previous_end);
+    printf("iOS PoC: at start the free block from 0x7000000000 ends at %#llx (%.2f GiB)\n", (unsigned long long)early_free_end,
+           early_free_end ? (double)(early_free_end - UINT64_C(0x7000000000)) / (1 << 30) : 0.0);
     printf("iOS PoC: memory available to this app before it is stopped: %.2f GiB\n", (double)os_proc_available_memory() / (1 << 30));
     fflush(stdout);
 }
