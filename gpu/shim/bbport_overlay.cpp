@@ -2004,8 +2004,14 @@ void SetupFrame(float ms, std::chrono::steady_clock::time_point now, u32 width, 
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2(float(width), float(height));
     io.DeltaTime = ms > 0.0f && ms < 1000.0f ? ms / 1000.0f : 1.0f / 60.0f;
-    // UI scale follows the display height (1080p = 1).
-    const float scale = std::max(float(height) / 1080.0f, 0.75f);
+    // UI scale follows the display height (1080p = 1). BB_UI_SCALE multiplies it: a small screen
+    // seen close (a phone: the iOS proof of concept sets 1.75) needs more than its pixel height.
+    static const float ui_factor = [] {
+        const char* env = std::getenv("BB_UI_SCALE");
+        const float f = env ? std::strtof(env, nullptr) : 1.0f;
+        return f >= 0.5f && f <= 4.0f ? f : 1.0f;
+    }();
+    const float scale = std::max(float(height) / 1080.0f, 0.75f) * ui_factor;
     if (std::abs(scale - base_scale) > 0.01f) {
         ImGuiStyle& style = ImGui::GetStyle();
         style.ScaleAllSizes(scale / base_scale);

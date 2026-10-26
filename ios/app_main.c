@@ -216,15 +216,22 @@ int main(int argc, char **argv) {
         {"BB_COPY_GPU_BUFFERS", "1"}, {"BB_GPU_WRITE_TWINS", "1"}, {"BB_GPU_WRITE_TWINS_MAX", "65536"},
         {"BB_VBLANK_HZ", "60"}, {"BB_LANGUAGE", "1"}, {"BB_UI_LANGUAGE", "en"}, {"BB_FRAME_STATS", "1"},
         {"BB_GPU_USER_DIR", user_dir}, {"BB_CONFIG", config},
+        {"BB_UI_SCALE", "1.75"},
         {"BB_PRESENT_DUMP_TRIGGER", grab_trigger}, {"BB_DUMP_DIR", grab_dir},
         {"BB_TEST_TITLE", "iOS PoC P2: Metal on the iPhone"},
         {"BB_TEST_DETAIL", "Native 1080p, recompiled library, no JIT, file-backed guest memory"},
     };
     for (size_t i = 0; i < sizeof(defaults) / sizeof(*defaults); ++i) setenv(defaults[i][0], defaults[i][1], 0);
-    /* A first bbport.ini: the FPS counter on, large (the test runs' setting). */
-    if (access(config, F_OK)) {
-        FILE *ini = fopen(config, "w");
-        if (ini) { fputs("show_fps=1\nfps_size=big\n", ini); fclose(ini); }
+    /* bbport.ini's starting values: the FPS counter on, large, at the bottom left (clear of the
+     * test banner at the top), unless the file already sets the position. */
+    FILE *ini = fopen(config, "r");
+    char line[256];
+    int has_position = 0;
+    while (ini && fgets(line, sizeof(line), ini)) has_position |= !strncmp(line, "fps_position=", 13);
+    if (ini) fclose(ini);
+    if (!has_position && (ini = fopen(config, "a"))) {
+        fputs("show_fps=1\nfps_size=big\nfps_position=bottom_left\n", ini);
+        fclose(ini);
     }
     printf("iOS PoC: Documents %s, recompiled library %s\n", documents,
            access(library, R_OK) ? "missing (interpreter only)" : library);
