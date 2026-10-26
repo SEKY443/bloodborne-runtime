@@ -138,7 +138,17 @@ uint32_t bb_guest_tls_displacement(void) { return 0; }
 #include <dlfcn.h>
 #include <objc/objc.h>
 #include <mach/mach.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+/* iOS (proof of concept) has no <mach/mach_vm.h>; its vm_* calls take 64-bit addresses on arm64. */
+#define mach_vm_address_t vm_address_t
+#define mach_vm_size_t vm_size_t
+#define mach_vm_read_overwrite vm_read_overwrite
+#define mach_vm_region vm_region_64
+#define mach_vm_allocate vm_allocate
+#else
 #include <mach/mach_vm.h>
+#endif
 
 uint64_t bb_gettid(void) { uint64_t id=0; pthread_threadid_np(NULL,&id); return id; }
 size_t bb_read_memory(void *dst, uintptr_t src, size_t n) {
@@ -171,6 +181,22 @@ int bb_shared_memory(const char *name, uint64_t size) {
     for (unsigned attempt=0; attempt<16; ++attempt) {
         snprintf(path,sizeof(path),"/%.20s-%d-%u",name,(int)getpid(),attempt);
         int fd=shm_open(path,O_RDWR|O_CREAT|O_EXCL,0600);
+#if TARGET_OS_IPHONE
+        /* iOS (proof of concept): the app sandbox refuses POSIX shared memory; an unlinked
+         * temporary file is mapped the same way (its clean pages can even be dropped under
+         * memory pressure). */
+        if (fd<0 && errno!=EEXIST) {
+            const char *tmp=getenv("TMPDIR");
+            char file[1024];
+            snprintf(file,sizeof(file),"%s/%.20s-%d-%u",tmp ? tmp : "/tmp",name,(int)getpid(),attempt);
+            fd=open(file,O_RDWR|O_CREAT|O_EXCL,0600);
+            if (fd<0) { if (errno==EEXIST) continue; return -1; }
+            unlink(file);
+            fcntl(fd,F_SETFD,FD_CLOEXEC);
+            if (ftruncate(fd,(off_t)size)) { close(fd); return -1; }
+            return fd;
+        }
+#endif
         if (fd<0) { if (errno==EEXIST) continue; return -1; }
         shm_unlink(path);
         fcntl(fd,F_SETFD,FD_CLOEXEC);

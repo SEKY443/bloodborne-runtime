@@ -1,0 +1,255 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B0000000000000000000A001 /* app_main.c in Sources */ = {isa = PBXBuildFile; fileRef = B0000000000000000000F001 /* app_main.c */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		B0000000000000000000F001 /* app_main.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = app_main.c; sourceTree = "<group>"; };
+		B0000000000000000000F003 /* BloodbornePoC.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BloodbornePoC.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		B0000000000000000000C002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		B0000000000000000000D001 = {
+			isa = PBXGroup;
+			children = (
+				B0000000000000000000F001 /* app_main.c */,
+				B0000000000000000000D002 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		B0000000000000000000D002 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B0000000000000000000F003 /* BloodbornePoC.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		B0000000000000000000E001 /* BloodbornePoC */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B00000000000000000009002 /* Build configuration list for PBXNativeTarget "BloodbornePoC" */;
+			buildPhases = (
+				B0000000000000000000C003 /* Sources */,
+				B0000000000000000000C002 /* Frameworks */,
+				B0000000000000000000C001 /* Embed the recompiled library */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BloodbornePoC;
+			productName = BloodbornePoC;
+			productReference = B0000000000000000000F003 /* BloodbornePoC.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		B0000000000000000000B001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 2700;
+			};
+			buildConfigurationList = B00000000000000000009001 /* Build configuration list for PBXProject "BloodbornePoC" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = B0000000000000000000D001;
+			productRefGroup = B0000000000000000000D002 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B0000000000000000000E001 /* BloodbornePoC */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		B0000000000000000000C001 /* Embed the recompiled library */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Embed the recompiled library";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# The player's own recompiled library (scripts/ios/recomp.sh), when built; without it the game's\n# code is interpreted.\nlib=\"$SRCROOT/../out/ios/librecomp.dylib\"\ndest=\"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"\nif [ -f \"$lib\" ]; then\n  mkdir -p \"$dest\"\n  cp -f \"$lib\" \"$dest/\"\n  if [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$dest/librecomp.dylib\"; fi\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		B0000000000000000000C003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B0000000000000000000A001 /* app_main.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		B00000000000000000008001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				SDKROOT = iphoneos;
+			};
+			name = Debug;
+		};
+		B00000000000000000008002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				SDKROOT = iphoneos;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		B00000000000000000008003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/../deps/ios-arm64/include";
+				INFOPLIST_KEY_CFBundleDisplayName = "Bloodborne PoC";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_UIFileSharingEnabled = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				MARKETING_VERSION = 0.1;
+				OTHER_LDFLAGS = (
+					"$(SRCROOT)/../out/ios/libbbios.a",
+					"$(SRCROOT)/../deps/ios-arm64/lib/libSDL3.a",
+					"-framework", AVFoundation,
+					"-framework", AudioToolbox,
+					"-framework", CoreAudio,
+					"-framework", CoreBluetooth,
+					"-framework", CoreFoundation,
+					"-framework", CoreGraphics,
+					"-framework", CoreHaptics,
+					"-framework", CoreMedia,
+					"-framework", CoreVideo,
+					"-framework", IOSurface,
+					"-framework", OpenGLES,
+					"-framework", CoreMotion,
+					"-framework", Foundation,
+					"-framework", GameController,
+					"-framework", Metal,
+					"-framework", QuartzCore,
+					"-framework", UIKit,
+					"-framework", UniformTypeIdentifiers,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.pablovsouza.bloodborne-poc";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B00000000000000000008004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/../deps/ios-arm64/include";
+				INFOPLIST_KEY_CFBundleDisplayName = "Bloodborne PoC";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_UIFileSharingEnabled = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				MARKETING_VERSION = 0.1;
+				OTHER_LDFLAGS = (
+					"$(SRCROOT)/../out/ios/libbbios.a",
+					"$(SRCROOT)/../deps/ios-arm64/lib/libSDL3.a",
+					"-framework", AVFoundation,
+					"-framework", AudioToolbox,
+					"-framework", CoreAudio,
+					"-framework", CoreBluetooth,
+					"-framework", CoreFoundation,
+					"-framework", CoreGraphics,
+					"-framework", CoreHaptics,
+					"-framework", CoreMedia,
+					"-framework", CoreVideo,
+					"-framework", IOSurface,
+					"-framework", OpenGLES,
+					"-framework", CoreMotion,
+					"-framework", Foundation,
+					"-framework", GameController,
+					"-framework", Metal,
+					"-framework", QuartzCore,
+					"-framework", UIKit,
+					"-framework", UniformTypeIdentifiers,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.pablovsouza.bloodborne-poc";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		B00000000000000000009001 /* Build configuration list for PBXProject "BloodbornePoC" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B00000000000000000008001 /* Debug */,
+				B00000000000000000008002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B00000000000000000009002 /* Build configuration list for PBXNativeTarget "BloodbornePoC" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B00000000000000000008003 /* Debug */,
+				B00000000000000000008004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = B0000000000000000000B001 /* Project object */;
+}
