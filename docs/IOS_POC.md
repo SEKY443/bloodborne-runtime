@@ -98,30 +98,16 @@ repository: bloodborne-mac's `docs/ARCHITECTURE.md` ("Where code lives").
 
 ## Build and run
 
-Needs the macOS build first (`bash build.sh`; its dependency sources are reused), Xcode, an
-iPhone in developer mode and an Apple ID added to Xcode (a free one works; apps are re-signed
-every 7 days).
+The app (its shell, build, signing and test scripts) is
+[bloodborne-ios](https://github.com/bloodborne-native/bloodborne-ios) (private), with this
+repository as its `runtime/` submodule. What stays here are the iOS builds of the runtime's own
+parts:
 
 ```sh
 bash scripts/ios/build-deps.sh                       # deps/ios-arm64 from deps/build/src
-bash scripts/ios/build-gpu.sh                        # out/ios/gpu/libbbgpu.a
+bash scripts/ios/build-gpu.sh                        # out/ios/gpu/libbbgpu.a (BB_FSR off: no FSR on iOS)
+bash scripts/ios/build-core.sh                       # out/ios/libbbios.a
 bash scripts/ios/recomp.sh                           # out/ios/librecomp.dylib (BB_RECOMP_GEN: the C)
-BB_IOS_TEAM=<team> BB_IOS_DEVICE=<udid> bash scripts/ios/build-app.sh   # builds, signs, installs
 ```
-
-The app's `Documents` (Finder's Files tab, or `xcrun devicectl device copy to ... --domain-type
-appDataContainer`) holds `game/` (the dump), `boot-linked.bin` and `content.bin` from the Mac's
-`out/`, `patches.bin` written by `scripts/patches.py` for the phone's resolution (with Skip
-Intro), and the saves (`mac-save/` for a copy of the Mac's, `user/` for the phone's own).
-
-- `scripts/ios/trial.sh`: one gameplay measurement (launch, press into gameplay, FPS, stop); the
-  test banner counts down to the end (`Documents/test.clock`).
-- `scripts/ios/bisect.sh`: the recompiled function behind a crash.
-- `scripts/ios/press.sh`: a button press from the Mac (`Documents/pad`, `BB_PAD_FILE`).
-- `scripts/ios/profile.py`: a Time Profiler trace summarized by symbol.
-- The app's switches (`ios/app_main.c`): `BB_IOS_SAVE`, `BB_IOS_CPU_ONLY`, and the probes
-  `BB_IOS_PROBE_ONLY`, `BB_IOS_METAL_TEST`, `BB_IOS_FILE_TEST`, `BB_IOS_GUARD_TEST`. devicectl
-  keeps environment variables between launches, so a switch is turned off with `0`, not by
-  leaving it out.
 
 Generated C, the recompiled library, logs and traces stay in the ignored `out/`.
