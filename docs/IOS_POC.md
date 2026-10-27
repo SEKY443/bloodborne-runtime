@@ -51,8 +51,11 @@ repository: bloodborne-mac's `docs/ARCHITECTURE.md` ("Where code lives").
   other subsystems take it) spins until a TSC deadline before sleeping. With 6 cores (2 fast) and
   the game's code slower than on a PS4, eight threads spun on it and starved the thread holding
   it: 57% of the CPU in a Time Profiler trace. The host version keeps the lock word and the game's
-  semaphore and spins 128 times with the CPU's `yield` before sleeping. On the Mac it is not
-  enabled yet: to be measured in CPU time first.
+  semaphore and spins 128 times with the CPU's `yield` before sleeping. On the Mac it costs
+  instead (translator, copied save, 30 s: 414% of one core against 380% with the game's own,
+  31.1 against 32.2 FPS): the JIT runs the game's lock as fast inline code, 12 cores leave little
+  spinning to save, and the host version costs a trip out of the JIT at every lock and unlock. It
+  stays for platforms without a JIT and with few fast cores.
 - **Natives called from recompiled code** went through the translator; now they are called
   directly, as host imports are (recomp `825c8c8`).
 - **Jump tables:** the recognizer misses `cmp; jbe TABLE`, bounds more than 12 instructions back
