@@ -326,6 +326,10 @@ int main(int argc, char **argv) {
     snprintf(pad_file, sizeof(pad_file), "%s/pad", documents);
     FILE *pad = fopen(pad_file, "w"); /* empty: nothing held */
     if (pad) fclose(pad);
+    char clock_file[1100];
+    snprintf(clock_file, sizeof(clock_file), "%s/test.clock", documents);
+    FILE *clock_out = fopen(clock_file, "w"); /* empty: the banner counts up until trial.sh sets the end */
+    if (clock_out) fclose(clock_out);
     mkdir(grab_dir, 0755);
     const char *defaults[][2] = {
         {"BB_METAL_FRAME", "1"}, {"BB_METAL_NATIVE_BOOT", "1"}, {"BB_GFX_BACKEND", "metal"},
@@ -335,6 +339,7 @@ int main(int argc, char **argv) {
         {"BB_GPU_USER_DIR", user_dir}, {"BB_CONFIG", config},
         {"BB_UI_SCALE", "1.75"},
         {"BB_PAD_FILE", pad_file}, /* scripts/ios/press.sh: buttons pressed from the Mac */
+        {"BB_TEST_CLOCK", clock_file}, /* scripts/ios/trial.sh: when it closes the app */
         /* One Metal buffer over guest memory: the Mac's overlapping windows (a MoltenVK
          * workaround) pinned 512 MiB twice, and pinned memory got the app killed. */
         {"BB_POOL_SPLIT", "0"},

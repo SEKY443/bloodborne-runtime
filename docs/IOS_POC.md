@@ -20,8 +20,16 @@ repository: bloodborne-mac's `docs/ARCHITECTURE.md` ("Where code lives").
 | That mutex called without the translator (recomp `825c8c8`) | 16.9 |
 | Current recompiler, host `tanf`/`atan2f`/`wmemset`, the 730 functions of the jump-table change left to the interpreter | 23.1 |
 | Those 730 functions recompiled too, after the generator fix (recomp `f0f4eb0`) | 30.0–30.7 |
+| The interpreter looking up recompiled code at block starts only (recomp `e86a05d`) | 32.7–35.6 |
 
-- 30 FPS is the game's own cap. Over 40 s the last 10-second sample fell to 22 in each run.
+- **Heat:** after about 40 s in the level the frame rate falls by about 30% (to 22.5 before the
+  last change, 24.1 after it) at the same CPU use (about 375% of one core) and the same draws:
+  the cores slow down. The hottest die sensor (the FPS counter and the `Process:` log line) climbs
+  from about 52 °C to 73 °C, and the drop comes there, the die then cooling to about 67 °C. The
+  system's thermal state stays "nominal" throughout: it is not the signal to watch.
+- **Open:** one run of seven since the generator fix stopped on a host fault in the recompiled
+  `f_c0ba10` (address `0x1000000010108`) while the level loaded; the same build ran again
+  without it.
 
 - The frame is bound by the CPU, not the GPU: effects off gained 7%, no Metal command buffer took
   25 ms, and the GPU submission thread was idle about 89% of the time at 7 FPS. The PS4 version
@@ -76,11 +84,13 @@ repository: bloodborne-mac's `docs/ARCHITECTURE.md` ("Where code lives").
 
 ## Next steps
 
-1. A new profile at 30 FPS: what still holds the frame, and why it drops after a while (heat).
+1. Less CPU work for the same frames, since heat is what limits the frame rate now: the
+   interpreter still had 13% of the samples (Havok's workers spend 45% of their time in it), so
+   find what it runs (the PS4's own libraries, functions left out) and recompile it.
 2. MetalFX at a lower render resolution (less GPU time and heat at the same frame rate).
-3. The PS4's own libraries through the recompiler (they are interpreted).
+3. The generator's CPU work (the app's `docs/ROADMAP.md`, section 8), which helps the Mac too.
 4. Other spinning waits, found the way the mutex was.
-5. QoS per thread (only the main and render threads), if the profile shows them on slow cores.
+5. QoS per thread (only the main and render threads), if a profile shows them on slow cores.
 
 ## Build and run
 
@@ -100,7 +110,8 @@ appDataContainer`) holds `game/` (the dump), `boot-linked.bin` and `content.bin`
 `out/`, `patches.bin` written by `scripts/patches.py` for the phone's resolution (with Skip
 Intro), and the saves (`mac-save/` for a copy of the Mac's, `user/` for the phone's own).
 
-- `scripts/ios/trial.sh`: one gameplay measurement (launch, press into gameplay, FPS, stop).
+- `scripts/ios/trial.sh`: one gameplay measurement (launch, press into gameplay, FPS, stop); the
+  test banner counts down to the end (`Documents/test.clock`).
 - `scripts/ios/bisect.sh`: the recompiled function behind a crash.
 - `scripts/ios/press.sh`: a button press from the Mac (`Documents/pad`, `BB_PAD_FILE`).
 - `scripts/ios/profile.py`: a Time Profiler trace summarized by symbol.

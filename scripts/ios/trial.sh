@@ -26,6 +26,10 @@ for _ in $(seq 1 12); do
     d=$(grep "Frame stats" "$L" | tail -1 | grep -o "[0-9]* draws/frame"); [[ ${d%% *} -gt 500 ]] && break
     grep -q "terminated" "$L" && break
 done
+# The test banner counts down to the end of the measurement (Documents/test.clock).
+echo $(( $(date +%s) + ${MEASURE:-40} )) > out/ios/logs/test.clock
+xcrun devicectl device copy to --device "$U" --domain-type appDataContainer --domain-identifier "$A" \
+    --source out/ios/logs/test.clock --destination Documents/test.clock >/dev/null 2>&1
 start=$(grep -c "Frame stats" "$L"); sleep "${MEASURE:-40}"
 echo "== $name"
 grep "Frame stats" "$L" | tail -n +$((start + 2)) | grep -o "^Frame stats: [0-9.]* FPS\|[0-9]* draws/frame" | paste - - | tail -4
