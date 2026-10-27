@@ -183,6 +183,12 @@ void bb_set_thread_name(const char *name);
 /* macOS: tells the system the process is latency-critical and user-initiated (no timer
  * coalescing or App Nap); nothing elsewhere. */
 void bb_latency_critical(void);
+/* Apple: the scheduling class of the game's threads, from BB_THREAD_QOS (interactive: user
+ * interactive, initiated: user initiated; unset: the system's choice). On a phone it decides
+ * whether a thread may run on the few fast cores. Nothing elsewhere. */
+void bb_thread_qos(pthread_attr_t *attributes);
+/* The calling thread's scheduling class as a number (Apple's qos_class_t; 0 elsewhere). */
+unsigned bb_thread_qos_self(void);
 /* Fills the buffer with random bytes; 0 on success. */
 int bb_random(void *buffer, size_t size);
 /* Highest address of the calling thread's stack. */

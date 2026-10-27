@@ -236,6 +236,7 @@ static void *host_start(void *p) {
     GuestThread *t=p;
     attach(t);
     set_host_name(t->name);
+    if (getenv("BB_THREAD_QOS_LOG")) printf("Runtime: thread '%s' QoS %#x\n",t->name,bb_thread_qos_self());
     probe_lifecycle(t, "entry");
     if (!setjmp(t->exit_jump)) {
 #ifdef BB_HAVE_BBCPU
@@ -262,6 +263,7 @@ static int32_t create(GuestThread **out,ThreadAttr **attr_slot,GuestEntry entry,
     snprintf(t->name,sizeof(t->name),"%s",name ? name : "guest");
     pthread_attr_t host;
     pthread_attr_init(&host);
+    bb_thread_qos(&host);
     uint64_t stack=t->attr.stack<MIN_STACK ? MIN_STACK : t->attr.stack;
     /* Stacks below 1 TiB as on PS4; guest code may pack stack addresses. */
     /* Whole 16 KiB pages: macOS rejects other stack sizes (the thread would get a high default stack). */

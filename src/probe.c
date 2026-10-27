@@ -712,6 +712,7 @@ int main(int argc, char **argv) {
         pthread_t thread;
         pthread_attr_init(&attributes);
         pthread_attr_setstacksize(&attributes,8*1024*1024);
+        bb_thread_qos(&attributes);
         if (pthread_create(&thread,&attributes,game_thread,NULL)) fail("cannot start the game thread");
         pthread_attr_destroy(&attributes);
         bbgpu_window_loop();

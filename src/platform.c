@@ -85,6 +85,8 @@ void bb_sleep_until(uint64_t deadline_ns) {
 void bb_set_thread_name(const char *name) { pthread_setname_np(pthread_self(),name); }
 int bb_random(void *buffer, size_t size) { return getrandom(buffer,size,0)<0 ? -1 : 0; }
 void bb_latency_critical(void) {}
+void bb_thread_qos(pthread_attr_t *attributes) { (void)attributes; }
+unsigned bb_thread_qos_self(void) { return 0; }
 uintptr_t bb_thread_stack_top(void) {
     pthread_attr_t attr; void *base=NULL; size_t size=0;
     if (!pthread_getattr_np(pthread_self(),&attr)) { pthread_attr_getstack(&attr,&base,&size); pthread_attr_destroy(&attr); }
@@ -136,6 +138,7 @@ uint32_t bb_guest_tls_displacement(void) { return 0; }
 #else /* macOS */
 #include <os/lock.h>
 #include <dlfcn.h>
+#include <pthread/qos.h>
 #include <objc/objc.h>
 #include <mach/mach.h>
 #include <TargetConditionals.h>
@@ -337,6 +340,16 @@ int bb_random(void *buffer, size_t size) { arc4random_buf(buffer,size); return 0
  * NSActivityUserInitiated | NSActivityLatencyCritical turns off timer coalescing and App Nap,
  * which delay the game's short sleeps and the GPU threads' wakeups. The activity is kept for the
  * whole process. Resolved at run time: programs without Foundation (the tests) skip it. */
+void bb_thread_qos(pthread_attr_t *attributes) {
+    static int qos=-1;
+    if (qos < 0) {
+        const char *env=getenv("BB_THREAD_QOS");
+        qos=!env ? 0 : !strcmp(env,"interactive") ? QOS_CLASS_USER_INTERACTIVE
+                     : !strcmp(env,"initiated") ? QOS_CLASS_USER_INITIATED : 0;
+    }
+    if (qos) pthread_attr_set_qos_class_np(attributes,(qos_class_t)qos,0);
+}
+unsigned bb_thread_qos_self(void) { return (unsigned)qos_class_self(); }
 void bb_latency_critical(void) {
     typedef void *(*GetClass)(const char *);
     typedef SEL (*RegisterName)(const char *);
