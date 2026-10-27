@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -17,6 +18,14 @@
 #include <vector>
 
 #include <SDL3/SDL.h>
+#include <sys/resource.h>
+#include <thread>
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#include <dlfcn.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
+#endif
 #include "bbport_settings.h"
 #include "bbport_text.h"
 #include "bbport_trophy_queue.h"
@@ -1107,6 +1116,26 @@ const char* CpuName() {
     return jit && jit[0] == '0' ? "Interpreter" : "Translator";
 }
 
+/// The process's CPU time over wall time (100% = one core), sampled once a second (present thread).
+float CpuPercent() {
+    static double last_wall = 0.0, last_cpu = 0.0;
+    static float percent = 0.0f;
+    const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (wall - last_wall < 1.0) {
+        return percent;
+    }
+    rusage usage{};
+    getrusage(RUSAGE_SELF, &usage);
+    const double cpu = usage.ru_utime.tv_sec + usage.ru_utime.tv_usec / 1e6 + usage.ru_stime.tv_sec +
+                       usage.ru_stime.tv_usec / 1e6;
+    if (last_wall > 0.0) {
+        percent = float((cpu - last_cpu) / (wall - last_wall) * 100.0);
+    }
+    last_wall = wall;
+    last_cpu = cpu;
+    return percent;
+}
+
 /// What draws the frame: the Metal backend's frame path (BB_METAL_FRAME=1), MoltenVK, or Vulkan.
 const char* RendererName() {
 #ifdef BB_METAL_BACKEND
@@ -1133,11 +1162,38 @@ const char* TestTitle() {
     return title;
 }
 
+/// The test's clock: how long it has run, or, once the runner wrote the time it will close the game
+/// (seconds since 1970) into BB_TEST_CLOCK's file, the time left. Read once a second.
+void TestClock(char* text, size_t size) {
+    static const char* path = std::getenv("BB_TEST_CLOCK");
+    static const auto started = std::chrono::steady_clock::now();
+    static auto last_read = std::chrono::steady_clock::time_point{};
+    static long long end = 0;
+    const auto now = std::chrono::steady_clock::now();
+    if (path && path[0] && now - last_read >= std::chrono::seconds(1)) {
+        last_read = now;
+        if (FILE* file = std::fopen(path, "r")) {
+            long long value = 0;
+            end = std::fscanf(file, "%lld", &value) == 1 ? value : 0;
+            std::fclose(file);
+        }
+    }
+    if (end > 0) {
+        const long long left = std::max(0LL, end - (long long)std::time(nullptr));
+        std::snprintf(text, size, "closes in %lld:%02lld", left / 60, left % 60);
+    } else {
+        const long long ran = std::chrono::duration_cast<std::chrono::seconds>(now - started).count();
+        std::snprintf(text, size, "%lld:%02lld", ran / 60, ran % 60);
+    }
+}
+
 void TestBanner() {
     static const char* detail = [] {
         const char* env = std::getenv("BB_TEST_DETAIL");
         return env && env[0] ? env : nullptr;
     }();
+    char clock[32];
+    TestClock(clock, sizeof(clock));
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
                                    viewport->WorkPos.y + S(14)),
@@ -1163,6 +1219,13 @@ void TestBanner() {
         ImGui::PopTextWrapPos();
         ImGui::PopStyleColor();
     }
+    // The clock on its own row, centered (the window is as wide as its widest line).
+    const float clock_width = ImGui::CalcTextSize(clock).x;
+    const float row = ImGui::GetContentRegionAvail().x;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (row - clock_width) * 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_Text, Theme::MutedForeground);
+    ImGui::TextUnformatted(clock);
+    ImGui::PopStyleColor();
     ImGui::End();
     ImGui::PopStyleVar(2);
 }
@@ -1231,6 +1294,29 @@ void FpsCounter() {
     const auto output = BbSettings::CurrentOutput();
     // What runs it: the GPU path and the CPU path.
     ImGui::Text("%s  ·  %s", RendererName(), CpuName());
+    // CPU use and the hottest die sensor (amber from 70 °C, red from 85 °C); without sensors, the
+    // system's thermal state (amber when it throttles).
+    ImGui::Text("CPU %.0f%%", CpuPercent());
+    const float celsius = Temperature();
+    const int thermal = ThermalState();
+    const char* name = ThermalName(thermal);
+    if (celsius > 0.0f || name) {
+        ImGui::SameLine(0.0f, 0.0f);
+        ImGui::TextUnformatted("  ·  ");
+        ImGui::SameLine(0.0f, 0.0f);
+        if (celsius > 0.0f) {
+            ImGui::PushStyleColor(ImGuiCol_Text, celsius >= 85.0f   ? Theme::PrimaryHover
+                                                 : celsius >= 70.0f ? Theme::Warning
+                                                                    : Theme::MutedForeground);
+            ImGui::Text("%.0f °C", celsius);
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Text, thermal >= 2   ? Theme::PrimaryHover
+                                                 : thermal == 1 ? Theme::Warning
+                                                                : Theme::MutedForeground);
+            ImGui::Text("thermal %s", name);
+        }
+        ImGui::PopStyleColor();
+    }
     if (upscaler) {
         ImGui::Text("%s  %d x %d > %d x %d", upscaler, s.active_render_width.load(), s.active_render_height.load(),
                     output.width, output.height);
@@ -1961,6 +2047,152 @@ bool Visible() {
     }
     return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps ||
                            trophy_queue.Pending() || TestTitle());
+}
+
+
+int ThermalState() {
+#ifdef __APPLE__
+    // [[NSProcessInfo processInfo] thermalState]: no autoreleased objects, safe on any thread.
+    static const Class info_class = objc_getClass("NSProcessInfo");
+    if (!info_class) {
+        return -1;
+    }
+    const auto send = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend);
+    const auto state = reinterpret_cast<long (*)(id, SEL)>(objc_msgSend);
+    const id info = send(reinterpret_cast<id>(info_class), sel_registerName("processInfo"));
+    return info ? int(state(info, sel_registerName("thermalState"))) : -1;
+#else
+    return -1;
+#endif
+}
+
+#ifdef __APPLE__
+namespace {
+// IOKit's HID event system (private, loaded at run time): the temperature sensors' services
+// (usage page 0xff00, usage 5) and their temperature events, as system monitors read them.
+using HidClient = void*;
+struct HidApi {
+    HidClient (*create)(CFAllocatorRef);
+    int (*set_matching)(HidClient, CFDictionaryRef);
+    CFArrayRef (*copy_services)(HidClient);
+    CFTypeRef (*copy_event)(void* service, int64_t type, int32_t options, int64_t timestamp);
+    double (*float_value)(CFTypeRef event, int32_t field);
+    CFTypeRef (*copy_property)(void* service, CFStringRef key);
+};
+
+bool LoadHid(HidApi& api) {
+    void* iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+    if (!iokit) {
+        return false;
+    }
+    api.create = reinterpret_cast<decltype(api.create)>(dlsym(iokit, "IOHIDEventSystemClientCreate"));
+    api.set_matching =
+        reinterpret_cast<decltype(api.set_matching)>(dlsym(iokit, "IOHIDEventSystemClientSetMatching"));
+    api.copy_services =
+        reinterpret_cast<decltype(api.copy_services)>(dlsym(iokit, "IOHIDEventSystemClientCopyServices"));
+    api.copy_event = reinterpret_cast<decltype(api.copy_event)>(dlsym(iokit, "IOHIDServiceClientCopyEvent"));
+    api.float_value = reinterpret_cast<decltype(api.float_value)>(dlsym(iokit, "IOHIDEventGetFloatValue"));
+    api.copy_property =
+        reinterpret_cast<decltype(api.copy_property)>(dlsym(iokit, "IOHIDServiceClientCopyProperty"));
+    return api.create && api.set_matching && api.copy_services && api.copy_event && api.float_value &&
+           api.copy_property;
+}
+
+CFDictionaryRef TemperatureMatching() {
+    int page = 0xff00, usage = 5;
+    CFNumberRef numbers[] = {CFNumberCreate(nullptr, kCFNumberIntType, &page),
+                             CFNumberCreate(nullptr, kCFNumberIntType, &usage)};
+    const void* keys[] = {CFSTR("PrimaryUsagePage"), CFSTR("PrimaryUsage")};
+    CFDictionaryRef matching = CFDictionaryCreate(nullptr, keys, reinterpret_cast<const void**>(numbers), 2,
+                                                  &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFRelease(numbers[0]);
+    CFRelease(numbers[1]);
+    return matching;
+}
+
+/// The hottest die sensor ("tdie" in its name: the CPU and GPU dies), else the hottest "SOC" or
+/// "PMU" one, in °C; 0 when there is none. The first call prints what it found.
+float ReadTemperature(const HidApi& api, HidClient client) {
+    constexpr int64_t TemperatureEvent = 15;
+    CFArrayRef services = api.copy_services(client);
+    if (!services) {
+        return 0.0f;
+    }
+    float die = 0.0f, soc = 0.0f;
+    int dies = 0, socs = 0;
+    const CFIndex count = CFArrayGetCount(services);
+    for (CFIndex i = 0; i < count; ++i) {
+        void* service = const_cast<void*>(CFArrayGetValueAtIndex(services, i));
+        char name[128] = "";
+        if (CFTypeRef product = api.copy_property(service, CFSTR("Product"))) {
+            if (CFGetTypeID(product) == CFStringGetTypeID()) {
+                CFStringGetCString(static_cast<CFStringRef>(product), name, sizeof(name), kCFStringEncodingUTF8);
+            }
+            CFRelease(product);
+        }
+        CFTypeRef event = api.copy_event(service, TemperatureEvent, 0, 0);
+        if (!event) {
+            continue;
+        }
+        const float value = float(api.float_value(event, int32_t(TemperatureEvent << 16)));
+        CFRelease(event);
+        if (value <= 0.0f || value >= 150.0f) {
+            continue;
+        }
+        if (std::strstr(name, "tdie")) {
+            die = std::max(die, value);
+            ++dies;
+        } else if (std::strstr(name, "SOC") || std::strstr(name, "PMU")) {
+            soc = std::max(soc, value);
+            ++socs;
+        }
+    }
+    CFRelease(services);
+    static bool printed = false;
+    if (!printed) {
+        printed = true;
+        std::printf("Temperature: %ld sensors, %d die and %d SoC/PMU ones read\n", long(count), dies, socs);
+    }
+    return dies ? die : soc;
+}
+
+std::atomic<float> temperature{0.0f};
+} // namespace
+#endif
+
+float Temperature() {
+#ifdef __APPLE__
+    // A thread of its own, every 2 s: reading every sensor takes milliseconds.
+    static std::once_flag started;
+    std::call_once(started, [] {
+        std::thread([] {
+            HidApi api{};
+            if (!LoadHid(api)) {
+                std::printf("Temperature: IOKit's HID event system is not available\n");
+                return;
+            }
+            HidClient client = api.create(kCFAllocatorDefault);
+            if (!client) {
+                return;
+            }
+            CFDictionaryRef matching = TemperatureMatching();
+            api.set_matching(client, matching);
+            CFRelease(matching);
+            for (;;) {
+                temperature.store(ReadTemperature(api, client), std::memory_order_relaxed);
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+            }
+        }).detach();
+    });
+    return temperature.load(std::memory_order_relaxed);
+#else
+    return 0.0f;
+#endif
+}
+
+const char* ThermalName(int state) {
+    static const char* const names[] = {"nominal", "fair", "serious", "critical"};
+    return state >= 0 && state < 4 ? names[state] : nullptr;
 }
 
 bool MenuOpen() {

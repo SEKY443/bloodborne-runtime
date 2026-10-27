@@ -9,12 +9,12 @@ name=${1:?usage: tools/mac_bench.sh NAME [ENV=VALUE...]}
 shift
 base=out/bench_${name}_$(date +%m%d_%H%M%S)
 pgrep -x bb-probe > /dev/null && { echo "A game is already running: not starting another." >&2; exit 1; }
-: > out/pad; echo "${BASE_MASK:-0}" > out/toggles
+: > out/pad; : > out/test.clock; echo "${BASE_MASK:-0}" > out/toggles
 # The game stays in the background (no focus taken from the desktop; BB_BENCH_FOREGROUND=1: brought
 # to the front as usual). Input comes from the pad file either way.
 [[ ${BB_BENCH_FOREGROUND:-0} == 1 ]] || export SDL_MAC_BACKGROUND_APP=1
 env BB_GAME_DIR="${BB_GAME_DIR:-$HOME/Downloads/PS4/Bloodborne/CUSA03173}" \
-    BB_PAD_FILE="$PWD/out/pad" BB_TOGGLE_FILE="$PWD/out/toggles" BB_FRAME_STATS=1 \
+    BB_PAD_FILE="$PWD/out/pad" BB_TEST_CLOCK="$PWD/out/test.clock" BB_TOGGLE_FILE="$PWD/out/toggles" BB_FRAME_STATS=1 \
     BB_FRAME_LOG="$PWD/$base.frames.csv" BB_FPS_LIMIT="${BB_FPS_LIMIT:-0}" \
     BB_PRESENT_DUMP_TRIGGER="$PWD/out/grab.trigger" BB_SCREEN_DUMP_TRIGGER="$PWD/out/screen.trigger" \
     BB_MENU_TRIGGER="$PWD/out/menu.trigger" BB_DUMP_DIR="$PWD/out/grab" "$@" \
@@ -79,7 +79,9 @@ if [[ ${SAMPLE:-0} == 1 ]]; then
     sample "$(pgrep -x bb-probe | head -1)" "${SAMPLE_SECONDS:-5}" -file "$PWD/$base.sample.txt" > /dev/null 2>&1 &&
         echo "sample: $base.sample.txt" || echo "sample failed"
 fi
-# GPU utilization (IOAccelerator, no sudo needed) and the game's CPU use, once a second.
+# GPU utilization (IOAccelerator, no sudo needed) and the game's CPU use, once a second. The test
+# banner counts down to the end of the hold (BB_TEST_CLOCK).
+echo $(( $(date +%s) + ${HOLD:-40} )) > out/test.clock
 : > "$base.load"
 for ((t = 0; t < ${HOLD:-40}; ++t)); do
     require_alive "in the level at hold sample $t"

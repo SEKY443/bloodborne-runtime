@@ -42,6 +42,15 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent);
 /// `command_buffer` (id<MTLCommandBuffer>). Called every frame (timing and live effects).
 void RenderMetal(void* command_buffer, void* target, u32 width, u32 height);
 
+/// The system's thermal state (NSProcessInfo.thermalState on Apple platforms: 0 nominal, 1 fair,
+/// 2 serious, 3 critical; the system throttles from fair up), or -1 where there is none.
+int ThermalState();
+/// The hottest die sensor in °C (Apple platforms, read every 2 s on a thread of its own), or 0
+/// where the system gives none.
+float Temperature();
+/// Its name for the overlay and the logs ("nominal" ... "critical"), or null for -1.
+const char* ThermalName(int state);
+
 /// The menu or the text dialog is open: the game's input is held neutral.
 bool CapturesInput();
 

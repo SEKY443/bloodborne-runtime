@@ -8,12 +8,13 @@ cd -- "$(dirname -- "$0")/.."
 kind=present trigger=out/grab.trigger
 [[ ${1:-} == --screen ]] && { kind=screen trigger=out/screen.trigger; shift; }
 mkdir -p out/grab
-before=$(ls out/grab/*_${kind}_*.raw 2>/dev/null | wc -l)
+# A dump newer than the request (each run numbers its dumps from 000, overwriting older ones).
+touch out/grab/.requested
 touch "$trigger"
 dumped=0
 for i in $(seq 1 100); do
     sleep 0.2
-    if [[ $(ls out/grab/*_${kind}_*.raw 2>/dev/null | wc -l) -gt $before ]]; then
+    if [[ -n $(find out/grab -name "*_${kind}_*.raw" -newer out/grab/.requested 2>/dev/null) ]]; then
         dumped=1
         break
     fi

@@ -16,6 +16,7 @@
 #include "bbport_toggles.h"
 #include "bbport_heap_sites.h"
 #include "bbport_wait_trace.h"
+#include "bbport_overlay.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 #if BB_METAL_BACKEND
 #include "video_core/renderer_metal/mtl_resources.h"
@@ -625,6 +626,22 @@ void VideoOutDriver::Flip(const Request& req) {
                         BbStats::tick_wait_ns.exchange(0) / (window * 1e7),
                         frames ? double(BbStats::reduced_draws.exchange(0)) / frames : 0.0,
                         frames ? double(BbStats::scene_draws.exchange(0)) / frames : 0.0);
+            {
+                // The whole process's CPU time over the window (100% = one core) and the system's
+                // thermal state: compares builds at a capped frame rate, and shows throttling.
+                static double window_cpu = 0.0;
+                rusage usage{};
+                getrusage(RUSAGE_SELF, &usage);
+                const double cpu = usage.ru_utime.tv_sec + usage.ru_utime.tv_usec / 1e6 +
+                                   usage.ru_stime.tv_sec + usage.ru_stime.tv_usec / 1e6;
+                const char* thermal = BbOverlay::ThermalName(BbOverlay::ThermalState());
+                if (window_cpu > 0.0) {
+                    std::printf("Process: CPU %.0f%% of one core; hottest die %.1f °C; thermal %s\n",
+                                (cpu - window_cpu) / window * 100.0, BbOverlay::Temperature(),
+                                thermal ? thermal : "unknown");
+                }
+                window_cpu = cpu;
+            }
             VideoCore::PageManager::ReportFaultSites();
             if (const u64 notes = BbStats::cpu_write_notes.exchange(0)) {
                 std::printf("Write notices: %.0f/s, %.2f MB/s (libc copies over pages the GPU side "

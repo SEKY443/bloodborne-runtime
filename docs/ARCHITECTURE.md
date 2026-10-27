@@ -154,7 +154,9 @@ The in-game menu (`gpu/shim/bbport_overlay.cpp`, Dear ImGui) opens with **F1** o
 has the launcher's tabs and look, applies what it can at once, and offers a restart for the rest
 (the launcher's options are exported to the environment again first). Its texts are the
 launcher's locales (`gpu/shim/locales/`). The FPS counter's big size names the renderer and the
-CPU path.
+CPU path, and shows the game's CPU use (100% = one core) and the hottest die sensor in °C (Apple
+platforms, from IOKit's HID event system on a thread of its own; the system's thermal state where
+no sensor can be read).
 
 Trophy unlocks are written to the profile's `trophies-v1.log`; a separate launcher helper shows
 the notifications ([Trophies](TROPHIES.md)).
