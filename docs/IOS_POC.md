@@ -19,6 +19,9 @@ repository: bloodborne-mac's `docs/ARCHITECTURE.md` ("Where code lives").
 | The game's mutex as host code (`src/runtime_game_lock.c`) | 16.4 |
 | That mutex called without the translator (recomp `825c8c8`) | 16.9 |
 | Current recompiler, host `tanf`/`atan2f`/`wmemset`, the 730 functions of the jump-table change left to the interpreter | 23.1 |
+| Those 730 functions recompiled too, after the generator fix (recomp `f0f4eb0`) | 30.0–30.7 |
+
+- 30 FPS is the game's own cap. Over 40 s the last 10-second sample fell to 22 in each run.
 
 - The frame is bound by the CPU, not the GPU: effects off gained 7%, no Metal command buffer took
   25 ms, and the GPU submission thread was idle about 89% of the time at 7 FPS. The PS4 version
@@ -58,25 +61,26 @@ repository: bloodborne-mac's `docs/ARCHITECTURE.md` ("Where code lives").
   stays for platforms without a JIT and with few fast cores.
 - **Natives called from recompiled code** went through the translator; now they are called
   directly, as host imports are (recomp `825c8c8`).
-- **Jump tables:** the recognizer misses `cmp; jbe TABLE`, bounds more than 12 instructions back
-  and an index copied before the `cmp`. Recognizing them brings 135,000 more instructions into C
-  (recomp `d612e83`), but that commit has a known bug: in `0x5a7930` the decoder continues past a
-  call to `__stack_chk_fail` (which never returns) into the jump table's data, and the epilogue
-  falls through into an instruction decoded from it. To be fixed in the generator before it can
-  go to main.
+- **Jump tables and calls that never return** (recomp `f0f4eb0`, on main): the recognizer now
+  takes `cmp; jbe TABLE`, bounds up to 32 instructions back and an index copied before the
+  `cmp`, which brings 135,000 more instructions into C. Decoding stops after calls to
+  `__stack_chk_fail`, `abort`, `exit` and `_exit` (it used to run on into jump table data), and an
+  instruction whose next one in address order is not where it continues jumps there explicitly.
+- **Thread QoS** (`BB_THREAD_QOS=interactive|initiated`; by default the system's choice, which is
+  user-initiated, `0x15`): every thread as user-interactive measured 27.1–29.0 FPS against
+  30.0–30.7 and paced worse (a 10-second window with a median frame of 50 ms). `BB_THREAD_QOS_LOG`
+  prints each thread's class.
 - **Host libc functions** (`src/runtime_libc.c`): the PS4 libc's busiest functions as host code,
   for 16-bit `wchar_t`. They cut interpreted calls from 130,000 to 52,000 a second without
   changing the frame rate on their own.
 
 ## Next steps
 
-1. Fix the generator (no decoding past calls that never return, no fall-through into
-   overlapping instructions) and turn the jump-table recognition on.
-2. Thread QoS: the main, render and GX threads as user-interactive, so they run on the 2 fast
-   cores.
-3. A new profile, then the PS4's own libraries through the recompiler (they are interpreted).
+1. A new profile at 30 FPS: what still holds the frame, and why it drops after a while (heat).
+2. MetalFX at a lower render resolution (less GPU time and heat at the same frame rate).
+3. The PS4's own libraries through the recompiler (they are interpreted).
 4. Other spinning waits, found the way the mutex was.
-5. MetalFX at a lower render resolution (less GPU time and heat at the same frame rate).
+5. QoS per thread (only the main and render threads), if the profile shows them on slow cores.
 
 ## Build and run
 
