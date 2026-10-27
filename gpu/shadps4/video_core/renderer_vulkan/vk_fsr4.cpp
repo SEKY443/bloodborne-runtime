@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/vk_fsr4.h"
+
+#if BB_FSR
 #include "bbport_toggles.h"
 
 #include <algorithm>
@@ -430,3 +432,28 @@ bool Fsr4Upscaler::Fatal() const noexcept {
 }
 
 } // namespace Vulkan
+#else
+
+// BB_FSR=OFF (iOS: the Metal backend only): FSR 4 is not in this build.
+namespace Vulkan {
+
+struct Fsr4Upscaler::Impl {};
+
+Fsr4Upscaler::Fsr4Upscaler(const Instance&, Scheduler&) {}
+
+Fsr4Upscaler::~Fsr4Upscaler() = default;
+
+bool Fsr4Upscaler::Record(const Frame&) {
+    return false;
+}
+
+const char* Fsr4Upscaler::Problem() const noexcept {
+    return "FSR 4 is not in this build";
+}
+
+bool Fsr4Upscaler::Fatal() const noexcept {
+    return true;
+}
+
+} // namespace Vulkan
+#endif

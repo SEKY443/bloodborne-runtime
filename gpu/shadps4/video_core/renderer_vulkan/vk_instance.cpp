@@ -21,7 +21,7 @@
 #include "video_core/renderer_vulkan/vk_dlss.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
-#ifdef __APPLE__
+#if defined(__APPLE__) && BB_FSR
 #include "video_core/renderer_vulkan/vk_fsr4_metal.h"
 #endif
 
@@ -1106,7 +1106,9 @@ vk::Format Instance::GetSupportedFormat(const vk::Format format,
 }
 
 bool Instance::IsFsr411Supported() const {
-#ifdef __APPLE__
+#if !BB_FSR
+    return false;
+#elif defined(__APPLE__)
     return metal_objects && Fsr4MetalBackend::IsSupported(*this);
 #else
     return IsFsr4Int8Supported() && mixed_float_dot_product;

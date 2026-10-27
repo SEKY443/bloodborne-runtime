@@ -65,10 +65,20 @@ find_program(GLSLANG_COMPILER NAMES glslang glslangValidator REQUIRED)
 set(SIRIT_USE_SYSTEM_SPIRV_HEADERS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/sirit EXCLUDE_FROM_ALL)
 
-# bbport: FSR 3.1 temporal upscaling / frame generation, native Vulkan (MIT, FireBurn/FSR-Vulkan).
-set(FFX_VK_PORTABLE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(FFX_VK_PORTABLE_BUILD_PROBE OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/fsr-vulkan EXCLUDE_FROM_ALL)
+# bbport: FSR 3.1 temporal upscaling / frame generation and FSR 4, native Vulkan (MIT,
+# FireBurn/FSR-Vulkan): the Vulkan backend's upscalers (docs/RENDER_ADAPTER.md, decision 5). Off on
+# iOS, where the Metal backend is the only one and MetalFX its upscaler.
+if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(BB_FSR_DEFAULT OFF)
+else()
+    set(BB_FSR_DEFAULT ON)
+endif()
+option(BB_FSR "Build FSR 3.1 and FSR 4 (the Vulkan backend's upscalers)" ${BB_FSR_DEFAULT})
+if (BB_FSR)
+    set(FFX_VK_PORTABLE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(FFX_VK_PORTABLE_BUILD_PROBE OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/fsr-vulkan EXCLUDE_FROM_ALL)
+endif()
 
 # Host shaders -> headers (same scheme as shadPS4's host_shaders/CMakeLists.txt).
 set(SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/host_shaders)
@@ -197,11 +207,13 @@ endif()
 # Runtime symbols (runtime_memory_*, runtime_process_*) resolve against bb-probe.
 if (APPLE)
     target_sources(bbgpu PRIVATE shadps4/video_core/renderer_metal/mtl_vk_c_bridge.cpp)
+    target_link_libraries(bbgpu PRIVATE "-framework Metal" "-framework Foundation")
+    target_link_options(bbgpu PRIVATE -Wl,-undefined,dynamic_lookup)
+endif()
+if (APPLE AND BB_FSR)
     target_sources(bbgpu PRIVATE shadps4/video_core/renderer_vulkan/vk_fsr4_metal.mm)
     set_source_files_properties(shadps4/video_core/renderer_vulkan/vk_fsr4_metal.mm PROPERTIES
         COMPILE_FLAGS "-fobjc-arc")
-    target_link_libraries(bbgpu PRIVATE "-framework Metal" "-framework Foundation")
-    target_link_options(bbgpu PRIVATE -Wl,-undefined,dynamic_lookup)
 
     # FSR 4.1.1 on Metal (vk_fsr4_metal.mm): its kernels and model layouts, built here into
     # out/fsr4_metal (gpu/fsr4_metal/build_assets.py) from fsr4-native-macos, DXC and SPIRV-Cross
@@ -248,6 +260,8 @@ if (APPLE)
         message(WARNING "fsr4-native-macos or DXC is not in deps (${BB_FSR4_NATIVE_SRC}): "
                         "FSR 4.1.1 on Metal is not built (scripts/macos/build-deps.sh)")
     endif()
+endif()
+if (APPLE)
     # MetalFX upscaler's Metal side (shim/bbport_metalfx.mm). MetalFX.framework is dlopen'ed
     # at run time, so nothing links against it; ARC is required by the ObjC objects.
     enable_language(OBJCXX)
@@ -293,7 +307,10 @@ if (APPLE)
         "-framework Metal" "-framework QuartzCore" "-framework Foundation")
     target_compile_definitions(bbgpu PRIVATE BB_METAL_BACKEND=1)
 endif()
-target_link_libraries(bbgpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan)
+if (BB_FSR)
+    target_link_libraries(bbgpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan)
+endif()
+target_compile_definitions(bbgpu PRIVATE BB_FSR=$<BOOL:${BB_FSR}>)
 target_link_libraries(bbgpu PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
     tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::FFMPEG miniz::miniz Zydis::Zydis sirit)
 if (NOT APPLE)
@@ -381,10 +398,12 @@ add_executable(upscaler-support-test EXCLUDE_FROM_ALL ../tests/test_upscaler_sup
 target_include_directories(upscaler-support-test PRIVATE shim)
 target_compile_options(upscaler-support-test PRIVATE -UNDEBUG)
 
-add_executable(fsr4-bench EXCLUDE_FROM_ALL tools/fsr4_bench.cpp
-    shadps4/video_core/renderer_vulkan/fsr411/fsr411.cpp)
-target_include_directories(fsr4-bench PRIVATE shadps4/video_core/renderer_vulkan/fsr411)
-target_link_libraries(fsr4-bench PRIVATE ffx-vulkan::fsr4-v07-vulkan ffx-vulkan::fsr4-v07-assets Vulkan::Vulkan)
+if (BB_FSR)
+    add_executable(fsr4-bench EXCLUDE_FROM_ALL tools/fsr4_bench.cpp
+        shadps4/video_core/renderer_vulkan/fsr411/fsr411.cpp)
+    target_include_directories(fsr4-bench PRIVATE shadps4/video_core/renderer_vulkan/fsr411)
+    target_link_libraries(fsr4-bench PRIVATE ffx-vulkan::fsr4-v07-vulkan ffx-vulkan::fsr4-v07-assets Vulkan::Vulkan)
+endif()
 
 # bbport online module (gpu/bbnet, libbbnet.so): built when its libraries are there (shell.nix);
 # BB_NET=OFF leaves it out. Without it the port plays offline.

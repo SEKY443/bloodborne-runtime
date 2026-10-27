@@ -25,7 +25,9 @@
 
 #include "bbport_settings.h"
 #include "bbport_toggles.h"
+#if BB_FSR
 #include "ffx_vk_portable.h"
+#endif
 #include "video_core/host_shaders/upscale_merge_comp.h"
 #include "video_core/host_shaders/upscale_reactive_comp.h"
 #include "video_core/host_shaders/taa_comp.h"
@@ -58,6 +60,7 @@ bool MetalFrameOn() {
 #endif
 }
 
+#if BB_FSR
 FfxVkPortableImage Describe(vk::Image image, vk::Format format, u32 width, u32 height,
                             vk::ImageUsageFlags usage, vk::ImageAspectFlags aspect,
                             FfxVkPortableResourceState state) {
@@ -73,6 +76,7 @@ FfxVkPortableImage Describe(vk::Image image, vk::Format format, u32 width, u32 h
     out.state = state;
     return out;
 }
+#endif
 
 /// bbport: BB_DUMP_TRIGGER=<file> BB_DUMP_DIR=<dir> (default out/dump): creating the file dumps
 /// the upscaler's images of the next BB_DUMP_FRAMES (8) frames as raw files
@@ -222,6 +226,7 @@ void PublishMetalFxProblem(const char* problem) {
     }
 }
 
+#if BB_FSR
 void PrintIssues(const char* what, u64 issues) {
     std::printf("Upscaler: %s invalid:", what);
     for (u32 bit = 0; bit < 64; ++bit) {
@@ -231,6 +236,7 @@ void PrintIssues(const char* what, u64 issues) {
     }
     std::printf("\n");
 }
+#endif
 
 } // namespace
 
@@ -316,10 +322,12 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
 
 TemporalUpscaler::~TemporalUpscaler() {
     if (resources_ready) scheduler.Finish();
+#if BB_FSR
     if (context) {
         scheduler.Finish();
         ffxVkPortableUpscaleContextDestroy(context);
     }
+#endif
 }
 
 bool TemporalUpscaler::Active() const {
@@ -547,16 +555,19 @@ bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
     // FSR 4 owns no portable FSR 3 context, but its images can still be in flight.
     scheduler.Finish();
     resources_ready = false;
+#if BB_FSR
     if (context) {
         ffxVkPortableUpscaleContextDestroy(context);
         context = nullptr;
     }
+#endif
     width = w;
     height = h;
     out_width = ow;
     out_height = oh;
     context_hdr = hdr;
 
+#if BB_FSR
     FfxVkPortableDeviceInfo device_info{};
     device_info.structSize = sizeof(device_info);
     device_info.instance = instance.GetInstance();
@@ -592,6 +603,12 @@ bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
             return false;
         }
     }
+#else
+    if (!use_fsr4 && !use_taa && !use_metalfx) {
+        std::printf("Upscaler: FSR 3 is not in this build (BB_FSR=OFF)\n");
+        return false;
+    }
+#endif
 
     const auto allocator = instance.GetAllocator();
     motion_view.reset();
@@ -701,11 +718,13 @@ bool TemporalUpscaler::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool hdr) {
         std::printf("Upscaler: FSR 4 inputs %ux%u -> %ux%u\n", w, h, ow, oh);
         return true;
     }
+#if BB_FSR
     FfxVkPortableMemoryUsage usage{};
     usage.structSize = sizeof(usage);
     ffxVkPortableUpscaleContextGetMemoryUsage(context, &usage);
     std::printf("Upscaler: FSR 3 context %ux%u -> %ux%u (%s), %.1f MB\n", w, h, ow, oh,
                 hdr ? "HDR scene color" : "tonemapped frame", usage.totalUsageInBytes / 1e6);
+#endif
     return true;
 }
 
@@ -1260,6 +1279,7 @@ void TemporalUpscaler::Run() {
         // crumb must end on this command buffer, not on the new one the copy back goes into.
         metal_pending = true;
     } else {
+#if BB_FSR
         FfxVkPortableUpscaleDispatchInfo info{};
         info.structSize = sizeof(info);
         info.commandBuffer = cmdbuf;
@@ -1327,6 +1347,9 @@ void TemporalUpscaler::Run() {
         } else {
             dispatched = true;
         }
+#else
+        failed = true; // FSR 3 is not in this build
+#endif
     }
     }
     if (metal_pending) {
@@ -2025,6 +2048,8 @@ void TemporalUpscaler::RunScaled() {
         return;
     }
 
+    bool ok = false;
+#if BB_FSR
     const auto& settings = BbSettings::Get();
     FfxVkPortableUpscaleDispatchInfo info{};
     info.structSize = sizeof(info);
@@ -2076,7 +2101,6 @@ void TemporalUpscaler::RunScaled() {
     // check sees a placeholder.
     auto checked = info;
     checked.commandBuffer = reinterpret_cast<VkCommandBuffer>(uintptr_t{1});
-    bool ok = false;
     if (const u64 issues = ffxVkPortableValidateUpscaleDispatchInfo(&create_info, &checked)) {
         PrintIssues("scaled dispatch", issues);
         failed = true;
@@ -2095,6 +2119,9 @@ void TemporalUpscaler::RunScaled() {
         dispatched_last_frame = true;
         ExtraSharpen(vk::Image(ui_image), true, ow, oh);
     }
+#else
+    failed = true; // FSR 3 is not in this build
+#endif
     barrier(vk::Image(ui_image), vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eGeneral, all,
             rw, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             color_access);
