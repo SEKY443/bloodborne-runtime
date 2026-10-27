@@ -1163,8 +1163,9 @@ const char* TestTitle() {
 }
 
 /// The test's clock: how long it has run, or, once the runner wrote the time it will close the game
-/// (seconds since 1970) into BB_TEST_CLOCK's file, the time left. Read once a second.
-void TestClock(char* text, size_t size) {
+/// (seconds since 1970) into BB_TEST_CLOCK's file, the time left. Read once a second. Returns the
+/// seconds left, or -1 while it counts up.
+long long TestClock(char* text, size_t size) {
     static const char* path = std::getenv("BB_TEST_CLOCK");
     static const auto started = std::chrono::steady_clock::now();
     static auto last_read = std::chrono::steady_clock::time_point{};
@@ -1181,9 +1182,31 @@ void TestClock(char* text, size_t size) {
     if (end > 0) {
         const long long left = std::max(0LL, end - (long long)std::time(nullptr));
         std::snprintf(text, size, "closes in %lld:%02lld", left / 60, left % 60);
-    } else {
-        const long long ran = std::chrono::duration_cast<std::chrono::seconds>(now - started).count();
-        std::snprintf(text, size, "%lld:%02lld", ran / 60, ran % 60);
+        return left;
+    }
+    const long long ran = std::chrono::duration_cast<std::chrono::seconds>(now - started).count();
+    std::snprintf(text, size, "%lld:%02lld", ran / 60, ran % 60);
+    return -1;
+}
+
+/// Text wrapped at `wrap`, each line centered in the window (an auto-sized window is as wide as its
+/// widest line, known from the frame before).
+void CenteredText(const char* text, float wrap) {
+    const float row = ImGui::GetContentRegionAvail().x;
+    const float left = ImGui::GetCursorPosX();
+    const char* const text_end = text + std::strlen(text);
+    for (const char* line = text; line < text_end;) {
+        const char* end = ImGui::GetFont()->CalcWordWrapPosition(ImGui::GetFontSize(), line, text_end, wrap);
+        if (end == line) {
+            ++end; // a word wider than the wrap: at least one character a line
+        }
+        const float width = ImGui::CalcTextSize(line, end).x;
+        ImGui::SetCursorPosX(left + std::max(0.0f, (row - width) * 0.5f));
+        ImGui::TextUnformatted(line, end);
+        line = end;
+        while (line < text_end && (*line == ' ' || *line == '\n')) {
+            ++line;
+        }
     }
 }
 
@@ -1193,7 +1216,7 @@ void TestBanner() {
         return env && env[0] ? env : nullptr;
     }();
     char clock[32];
-    TestClock(clock, sizeof(clock));
+    const long long left = TestClock(clock, sizeof(clock));
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
                                    viewport->WorkPos.y + S(14)),
@@ -1205,26 +1228,19 @@ void TestBanner() {
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                      ImGuiWindowFlags_NoFocusOnAppearing);
+    // Every line centered: the title, the detail (wrapped at 60% of the screen) and the clock.
+    const float wrap = viewport->WorkSize.x * 0.6f;
     ImGui::PushFont(font_heading, ImGui::GetFontSize() * 1.2f);
-    ImGui::PushStyleColor(ImGuiCol_Text, Theme::Warning);
-    ImGui::TextUnformatted("TEST");
-    ImGui::PopStyleColor();
-    ImGui::SameLine();
-    ImGui::TextUnformatted(TestTitle());
+    CenteredText(TestTitle(), wrap);
     ImGui::PopFont();
     if (detail) {
         ImGui::PushStyleColor(ImGuiCol_Text, Theme::MutedForeground);
-        ImGui::PushTextWrapPos(viewport->WorkSize.x * 0.6f);
-        ImGui::TextUnformatted(detail);
-        ImGui::PopTextWrapPos();
+        CenteredText(detail, wrap);
         ImGui::PopStyleColor();
     }
-    // The clock on its own row, centered (the window is as wide as its widest line).
-    const float clock_width = ImGui::CalcTextSize(clock).x;
-    const float row = ImGui::GetContentRegionAvail().x;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (row - clock_width) * 0.5f));
-    ImGui::PushStyleColor(ImGuiCol_Text, Theme::MutedForeground);
-    ImGui::TextUnformatted(clock);
+    // The clock: light while it counts up, amber counting down, red in the last 10 seconds.
+    ImGui::PushStyleColor(ImGuiCol_Text, left < 0 ? Theme::Foreground : left > 10 ? Theme::Warning : Theme::PrimaryHover);
+    CenteredText(clock, wrap);
     ImGui::PopStyleColor();
     ImGui::End();
     ImGui::PopStyleVar(2);

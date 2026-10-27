@@ -94,8 +94,8 @@ a time (`pgrep -x bb-probe` first). Test windows open on the screen.
   `TEST_TITLE="..."` (default: NAME) and `TEST_DETAIL="..."` put a banner at the top of the
   game's window saying what the run tests (`BB_TEST_TITLE`, `BB_TEST_DETAIL`: the overlay's
   test banner), for whoever sees it; it is in `grab.sh --screen` pictures, not in game frames.
-  Under them a clock counts the run's time, then the time left once the hold starts
-  (`BB_TEST_CLOCK`: a file where the runner writes when it will close the game, in seconds since
+  Each line is centered; under them a clock counts the run's time (light), then the time left
+  once the hold starts (amber, red in the last 10 seconds; `BB_TEST_CLOCK`: a file where the runner writes when it will close the game, in seconds since
   1970). Each frame-stats window also logs `Process:`: the game's CPU time (100% = one core), the
   hottest die sensor and the system's thermal state.
 - `tools/test_opening_video.sh NAME`: a new save in a fresh folder, through the opening video to
