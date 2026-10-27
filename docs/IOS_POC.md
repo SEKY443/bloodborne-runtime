@@ -27,6 +27,11 @@ repository: bloodborne-mac's `docs/ARCHITECTURE.md` ("Where code lives").
   the cores slow down. The hottest die sensor (the FPS counter and the `Process:` log line) climbs
   from about 52 °C to 73 °C, and the drop comes there, the die then cooling to about 67 °C. The
   system's thermal state stays "nominal" throughout: it is not the signal to watch.
+- **MetalFX** (640×360 upscaled to 960×540, `upscaler=metalfx`, `preset=1`, a `patches.bin` made
+  for 640×360), one 90-second run against native 960×540 from a cool phone: 33.1–34.4 FPS before
+  throttling against 29.1–34.8, the drop about 20 s later (about 65 s in the level against 45),
+  then 24.6–25.8 against 24.0–24.7, at the same CPU use. The heat comes from the CPU; MetalFX
+  delays the drop but does not prevent it.
 - **Open:** one run of seven since the generator fix stopped on a host fault in the recompiled
   `f_c0ba10` (address `0x1000000010108`) while the level loaded; the same build ran again
   without it.
@@ -87,10 +92,9 @@ repository: bloodborne-mac's `docs/ARCHITECTURE.md` ("Where code lives").
 1. Less CPU work for the same frames, since heat is what limits the frame rate now: the
    interpreter still had 13% of the samples (Havok's workers spend 45% of their time in it), so
    find what it runs (the PS4's own libraries, functions left out) and recompile it.
-2. MetalFX at a lower render resolution (less GPU time and heat at the same frame rate).
-3. The generator's CPU work (the app's `docs/ROADMAP.md`, section 8), which helps the Mac too.
-4. Other spinning waits, found the way the mutex was.
-5. QoS per thread (only the main and render threads), if a profile shows them on slow cores.
+2. The generator's CPU work (the app's `docs/ROADMAP.md`, section 8), which helps the Mac too.
+3. Other spinning waits, found the way the mutex was.
+4. QoS per thread (only the main and render threads), if a profile shows them on slow cores.
 
 ## Build and run
 
