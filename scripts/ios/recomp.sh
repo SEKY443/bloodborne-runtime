@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
-gen=recomp/out/recomp/gen
+gen=${BB_RECOMP_GEN:-recomp/out/recomp/gen} # BB_RECOMP_GEN: another generated tree
 out=out/ios/recomp
 [[ -n $(find "$gen" -maxdepth 1 -name 'recomp*.c' -print -quit) ]] ||
     { echo "No generated C in $gen: run recomp/tools/recomp/recomp.sh first" >&2; exit 1; }

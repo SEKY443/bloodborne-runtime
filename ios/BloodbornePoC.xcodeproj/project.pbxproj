@@ -151,6 +151,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/../deps/ios-arm64/include";
 				INFOPLIST_KEY_CFBundleDisplayName = "Bloodborne PoC";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
@@ -195,6 +196,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/../deps/ios-arm64/include";
 				INFOPLIST_KEY_CFBundleDisplayName = "Bloodborne PoC";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;

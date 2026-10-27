@@ -48,7 +48,13 @@ static ABI int32_t libc_wcsncmp(const wchar16 *a, const wchar16 *b, uint64_t n) 
     }
     return 0;
 }
+static ABI wchar16 *libc_wmemset(wchar16 *d, uint32_t c, uint64_t n) {
+    for (uint64_t i = 0; i < n; ++i) d[i] = (wchar16)c;
+    return d;
+}
 static ABI float libc_expf(float x) { return expf(x); }
+static ABI float libc_tanf(float x) { return tanf(x); }
+static ABI float libc_atan2f(float y, float x) { return atan2f(y, x); }
 /* Dinkumware's _FSin(x, qoff): sin(x + qoff * pi/2), so qoff 0 is the sine and 1 the cosine. */
 static ABI float libc_fsin(float x, uint32_t qoff) {
     switch (qoff & 3) {
@@ -62,7 +68,8 @@ static ABI float libc_fsin(float x, uint32_t qoff) {
 static const RuntimeExport exports[] = {
     {"strchr", libc_strchr}, {"wcslen", libc_wcslen}, {"wmemcpy", libc_wmemcpy}, {"wcschr", libc_wcschr},
     {"wmemchr", libc_wmemchr}, {"wmemcmp", libc_wmemcmp}, {"wcscmp", libc_wcscmp}, {"wcsncmp", libc_wcsncmp},
-    {"expf", libc_expf}, {"_FSin", libc_fsin},
+    {"wmemset", libc_wmemset}, {"expf", libc_expf}, {"tanf", libc_tanf}, {"atan2f", libc_atan2f},
+    {"_FSin", libc_fsin},
 };
 uintptr_t runtime_libc_resolve(const char *name) { return RUNTIME_LOOKUP(exports, name); }
 #else

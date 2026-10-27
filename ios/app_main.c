@@ -347,14 +347,15 @@ int main(int argc, char **argv) {
     };
     for (size_t i = 0; i < sizeof(defaults) / sizeof(*defaults); ++i) setenv(defaults[i][0], defaults[i][1], 0);
     /* bbport.ini's starting values: the FPS counter on, large, at the bottom left (clear of the
-     * test banner at the top), unless the file already sets the position. */
+     * test banner at the top), and the output the patch was made for (the overlay shows it),
+     * unless the file already sets the position. */
     FILE *ini = fopen(config, "r");
     char line[256];
     int has_position = 0;
     while (ini && fgets(line, sizeof(line), ini)) has_position |= !strncmp(line, "fps_position=", 13);
     if (ini) fclose(ini);
     if (!has_position && (ini = fopen(config, "a"))) {
-        fputs("show_fps=1\nfps_size=big\nfps_position=bottom_left\n", ini);
+        fputs("show_fps=1\nfps_size=big\nfps_position=bottom_left\noutput_res=960x540\n", ini);
         fclose(ini);
     }
     printf("iOS PoC: Documents %s, recompiled library %s\n", documents,
