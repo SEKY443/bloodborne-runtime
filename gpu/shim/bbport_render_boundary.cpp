@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <bit>
 #include <bitset>
 #include <span>
 #include <unordered_map>
@@ -563,6 +564,109 @@ void TakeVertexBuffers(const Vulkan::PreparedDraw& prepared, const Record& d, co
     }
 }
 
+// N2's inventory: per shader program, how its resources reach it. A sharp dword comes from a
+// user-data register (flat offset below 16), from a table the walker flattened (16 and above) or
+// is a constant of the shader's.
+struct ProgramInventory {
+    Shader::HwStage stage;
+    u64 hash, draws = 0, mesh_draws = 0;
+    u32 images = 0, samplers = 0, buffers = 0, special_buffers = 0;
+    u32 from_registers = 0, from_tables = 0, constant = 0; // sharps, by where most of their dwords come from
+    u32 registers = 0, registers_for_sharps = 0, flattened_dwords = 0;
+    bool dynamic_constants = false, immediate_constants = false;
+};
+std::unordered_map<const void*, ProgramInventory> inventory;
+
+template <typename Fetch>
+void Classify(const Fetch& fetch, ProgramInventory& e, u32& sharp_registers) {
+    u32 registers = 0, tables = 0, constants = 0;
+    for (std::size_t i = 0; i < fetch.offsets.size(); ++i) {
+        if (!(fetch.load_mask >> i & 1)) {
+            ++constants;
+        } else if (fetch.offsets[i] < 16) {
+            ++registers;
+            sharp_registers |= 1u << fetch.offsets[i];
+        } else {
+            ++tables;
+        }
+    }
+    (registers >= tables && registers >= constants ? e.from_registers : tables >= constants ? e.from_tables : e.constant) += 1;
+}
+
+ProgramInventory& Inventory(const Vulkan::PreparedStage& p) {
+    auto [it, fresh] = inventory.try_emplace(p.program);
+    ProgramInventory& e = it->second;
+    if (fresh) {
+        const Shader::Info& info = p.program->info;
+        e.stage = p.hw_stage;
+        e.hash = info.pgm_hash;
+        u32 sharp_registers = 0;
+        for (const auto& image : info.images) {
+            ++e.images;
+            Classify(image.sharp_fetch, e, sharp_registers);
+        }
+        for (const auto& sampler : info.samplers) {
+            ++e.samplers;
+            Classify(sampler.sharp_fetch, e, sharp_registers);
+        }
+        for (const auto& buffer : info.buffers) {
+            if (buffer.IsSpecial()) {
+                ++e.special_buffers;
+                continue;
+            }
+            ++e.buffers;
+            Classify(buffer.sharp_fetch, e, sharp_registers);
+        }
+        e.registers = info.ud_mask.NumRegs();
+        e.registers_for_sharps = std::popcount(sharp_registers);
+        e.flattened_dwords = info.srt_info.flattened_bufsize_dw;
+        const u32 readconst = u32(info.readconst_types);
+        e.immediate_constants = readconst & u32(Shader::Info::ReadConstType::Immediate);
+        e.dynamic_constants = readconst & u32(Shader::Info::ReadConstType::Dynamic);
+    }
+    return e;
+}
+
+void ReportInventory() {
+    u64 programs = 0, draws = 0, mesh = 0, sharps[3] = {}, special = 0, extra_registers = 0, dynamic = 0, immediate = 0;
+    for (const auto& [program, e] : inventory) {
+        ++programs;
+        draws += e.draws;
+        mesh += e.mesh_draws;
+        sharps[0] += e.from_registers, sharps[1] += e.from_tables, sharps[2] += e.constant;
+        special += e.special_buffers != 0;
+        extra_registers += e.registers > e.registers_for_sharps;
+        dynamic += e.dynamic_constants;
+        immediate += e.immediate_constants;
+    }
+    std::printf("Render boundary: inventory: %llu programs in %llu stage draws (%llu of mesh draws); sharps from "
+                "user-data registers %llu, from tables %llu, constant %llu; programs reading user-data registers "
+                "beyond their sharps %llu, with special buffers %llu, constant reads immediate %llu, dynamic %llu\n",
+                static_cast<unsigned long long>(programs), static_cast<unsigned long long>(draws),
+                static_cast<unsigned long long>(mesh), static_cast<unsigned long long>(sharps[0]),
+                static_cast<unsigned long long>(sharps[1]), static_cast<unsigned long long>(sharps[2]),
+                static_cast<unsigned long long>(extra_registers), static_cast<unsigned long long>(special),
+                static_cast<unsigned long long>(immediate), static_cast<unsigned long long>(dynamic));
+    // Per program, for the plan (BB_RENDER_BOUNDARY_INVENTORY=path): counts only.
+    static const char* path = std::getenv("BB_RENDER_BOUNDARY_INVENTORY");
+    if (path) {
+        if (FILE* f = std::fopen(path, "w")) {
+            std::fprintf(f, "hash,stage,draws,mesh_draws,images,samplers,buffers,special_buffers,sharps_from_registers,"
+                            "sharps_from_tables,sharps_constant,registers,registers_for_sharps,flattened_dwords,"
+                            "immediate_constants,dynamic_constants\n");
+            for (const auto& [program, e] : inventory) {
+                std::fprintf(f, "%016llx,%u,%llu,%llu,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%d,%d\n",
+                             static_cast<unsigned long long>(e.hash), u32(e.stage),
+                             static_cast<unsigned long long>(e.draws), static_cast<unsigned long long>(e.mesh_draws),
+                             e.images, e.samplers, e.buffers, e.special_buffers, e.from_registers, e.from_tables,
+                             e.constant, e.registers, e.registers_for_sharps, e.flattened_dwords,
+                             e.immediate_constants, e.dynamic_constants);
+            }
+            std::fclose(f);
+        }
+    }
+}
+
 void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::PreparedDraw* prepared,
                       u64 reg_checksum) {
     if (!prepared || prepared->state.load(std::memory_order_acquire) != Vulkan::PreparedDraw::Ready ||
@@ -592,6 +696,9 @@ void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::P
         if (s == Vertex) {
             vertex_stage = &p;
         }
+        ProgramInventory& entry = Inventory(p);
+        ++entry.draws;
+        entry.mesh_draws += d.mesh;
         const auto& r = d.stage[s];
         u32 texture_hash[StageTextureSlots], sampler_hash[16];
         for (u32 slot = 0; slot < StageTextureSlots; ++slot) {
@@ -728,6 +835,7 @@ void Report(u64 now) {
     }
     std::printf("\n");
     ReportSlotMaps();
+    ReportInventory();
     if (take_mesh_draws) {
         std::printf("Render boundary: mesh draws from the draw state %llu, resources taken %llu, differing from the "
                     "user data's %llu\n",

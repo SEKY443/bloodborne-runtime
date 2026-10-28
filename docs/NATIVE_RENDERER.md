@@ -30,10 +30,10 @@ steps.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 73% `██████████████░░░░░░` | N0, N1, N4 and N6 done; N5 the default, waiting for acceptance; N2 under way |
+| **R5 · native renderer** | 76% `███████████████░░░░░` | N0, N1, N4 and N6 done; N5 the default, waiting for acceptance; N2 under way |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
-| N2 · shaders from the draw state, then ahead of time | 20% `████░░░░░░░░░░░░░░░░` | 1 of 5 steps: the plan ([below](#n2-shaders-from-the-draw-state-then-ahead-of-time)). Next: N2.2, the inventory of the shaders and how each reads its resources |
+| N2 · shaders from the draw state, then ahead of time | 40% `████████░░░░░░░░░░░░` | 2 of 5 steps: the plan and the inventory ([below](#n2-shaders-from-the-draw-state-then-ahead-of-time)). Next: N2.3, mesh shaders built with bindings for their draw-state slots |
 | N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N2. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 95% `███████████████████░` | M1–M4 implemented; native Metal the default since 0.9.0 RC 1. Next: acceptance (below) |
@@ -239,10 +239,29 @@ the test save, translator, no faults):
 | Step | Progress | State |
 |---|---|---|
 | N2.1 · the plan | 100% `████████████████████` | This section |
-| N2.2 · the inventory | 0% `░░░░░░░░░░░░░░░░░░░░` | Next: the shader programs the game uses, and how each reads its resources (from user data registers, through tables in memory, as inline constants) |
-| N2.3 · mesh shaders from the draw state | 0% `░░░░░░░░░░░░░░░░░░░░` | Mesh draws' shaders built with fixed bindings for their draw-state slots (N6's slot maps), so neither the user-data walk nor its upload is needed for them; measured against today's path |
+| N2.2 · the inventory | 100% `████████████████████` | The shaders use the user data only to locate their resources (below) |
+| N2.3 · mesh shaders from the draw state | 0% `░░░░░░░░░░░░░░░░░░░░` | Next: mesh draws' shaders built with fixed bindings for their draw-state slots (N6's slot maps), so neither the user-data walk nor its upload is needed for them; measured against today's path |
 | N2.4 · the other draw kinds | 0% `░░░░░░░░░░░░░░░░░░░░` | The other draw methods' draws, then the compute passes, render-target passes and Scaleform: each from its own boundary, or left to the packet path |
 | N2.5 · ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | The shaders converted once on the player's machine, keyed by the game's shader code, so none is compiled during play |
+
+### The inventory (N2.2)
+
+`BB_RENDER_BOUNDARY=observe` also keeps, per shader program, how its resources reach it (the
+shader recompiler's record of where each sharp's dwords come from), and with
+`BB_RENDER_BOUNDARY_INVENTORY=path` writes the counts per program to a CSV file. In two minutes in
+the test save's area (M3 Pro, 5,715,048 stage draws of prepared draws; tessellated and
+geometry-shader draws are not prepared by the workers and not counted):
+
+- 144 programs: 55 vertex, 89 pixel. 83 are used by mesh draws; 34 make 90% of the stage draws.
+- Their 1,132 sharps come from user-data registers (266) or from tables in memory the binder
+  wrote (866); none is built into a shader.
+- No program reads a user-data register for anything but its resources, and none reads
+  constants from the flattened user data. The only other buffer is the renderer's own (user clip
+  planes, in every vertex program).
+- At most 14 textures per program; at most 180 dwords of flattened user data.
+
+So a shader rebuilt with fixed bindings for the draw-state slots its resources come from (N6's
+slot maps) needs no user data at all: neither the walk nor the upload.
 
 ### What N2 builds on
 
