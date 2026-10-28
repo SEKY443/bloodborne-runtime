@@ -37,7 +37,7 @@ steps.
 | N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 95% `███████████████████░` | M1–M4 implemented; native Metal the default since 0.9.0 RC 1. Next: acceptance (below) |
-| N6 · engine render boundary | 60% `████████████░░░░░░░░` | 4 of 7 steps, and N6.5 a quarter done: every input of a draw found from the draw state ([below](#n6-the-engines-render-boundary)). Next: each shader resource's slot in the draw state |
+| N6 · engine render boundary | 64% `████████████░░░░░░░░` | 4 of 7 steps, and N6.5 half done: every input of a draw found from the draw state, and each shader resource's slot in it ([below](#n6-the-engines-render-boundary)). Next: mesh draws recorded from the draw state |
 
 ## Now and next
 
@@ -140,7 +140,7 @@ with the draw state's layout in `annotations/structs.h`.
 | N6.2 · draws observed | 100% `████████████████████` | Every draw through the methods matched to its packets; topology, counts, index buffer and shaders agree |
 | N6.3 · output state observed | 100% `████████████████████` | Render and depth targets, blend, depth-stencil, rasterizer, viewport, scissor, stencil reference, blend colour and depth bounds agree |
 | N6.4 · resources observed | 100% `████████████████████` | The textures, samplers, constant buffers and vertex buffers the shaders read are the draw state's |
-| N6.5 · mesh draws from the draw state | 25% `█████░░░░░░░░░░░░░░░` | `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls) recorded from their records, in four parts: the buffers' addresses from the engine's managers (done); each shader resource's slot in the draw state (next); the draw recorded from the record behind a switch; measured against the packet path |
+| N6.5 · mesh draws from the draw state | 50% `██████████░░░░░░░░░░` | `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls) recorded from their records, in four parts: the buffers' addresses from the engine's managers (done); each shader resource's slot in the draw state (done); the draw recorded from the record behind a switch (next); measured against the packet path |
 | N6.6 · the other draw methods | 0% `░░░░░░░░░░░░░░░░░░░░` | The deferred lighting's quads and the upload ring's geometry |
 | N6.7 · the smaller boundaries | 0% `░░░░░░░░░░░░░░░░░░░░` | Compute passes, render-target passes (including the methods' own fast-clear resolves) and Scaleform: each its own boundary, or left to the packet path |
 
@@ -172,8 +172,9 @@ with the draw state's layout in `annotations/structs.h`.
   map onto the adapter's `DrawState`.
 - **Bindings.** Each stage's samplers (S#), textures (T#) and constant buffers (V#s made from
   address and size) are the resources the engine's binder copies into its descriptor tables.
-  Which binding slot each lands in is given by the shader's resource table, as the packet path
-  finds it today.
+  Each resource a shader reads comes from a fixed slot of the draw state: per shader program
+  for textures, samplers and constant buffers, per vertex program and input layout for vertex
+  attributes. The observer learns these slot maps from the draws it sees.
 - **Vertex and index buffers.** 32 vertex buffers with strides and offsets; the index buffer with
   its DXGI format and byte offset. The shader reads one V# per vertex attribute: the buffer's
   address plus the attribute's offset in a vertex, with the buffer's stride.
@@ -210,6 +211,12 @@ the test save, translator, no faults):
   every constant buffer (21,497,235), every vertex buffer (11,121,153) and every indexed draw's
   first index (1,856,692) is at the address the draw state gives. Asking the managers on every
   draw costs the game's threads time (31.0 FPS in that run).
+- The slot maps (N6.5, 218 programs and vertex layouts): every vertex attribute (368) and every
+  texture and constant buffer read comes from a fixed slot. 373 textures and 475 constant buffers
+  have exactly one; 57 textures and 72 buffers (shadPS4's null buffer among them) several slots
+  that always held the same value, so any of them gives the right resource. Samplers are often
+  identical across slots (50 one, 159 several); one fits no slot, most likely the engine's default
+  sampler for an empty slot (not checked yet).
 - Observing costs frame rate: 34.2–34.9 FPS with every comparison, 37.4–37.6 with the first
   ones, 36.2–37.0 without it that day. It is a diagnostic only.
 

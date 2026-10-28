@@ -21,7 +21,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <bitset>
 #include <span>
+#include <unordered_map>
+#include <vector>
 
 namespace BbRenderBoundary {
 namespace {
@@ -83,30 +86,27 @@ struct Record {
     float viewport[6], blend_color[4], depth_bounds[2];
     s32 scissor[4];
     u64 color_target[8], depth_target; // the targets' addresses; 0 for none
-    // The resources, compactly: per stage Bloom filters of its textures (the T#s, and their
-    // addresses) and samplers (the S#s), and its constant buffers' sizes; the vertex buffers'
-    // strides, and the addresses of those the draw state places itself. Constant buffers and most
-    // vertex buffers are placed by the context's buffer manager, which looks their addresses up in
-    // a table of its own, so their addresses are not compared yet.
+    // The resources by slot: per stage a 32-bit hash of each texture's T# and sampler's S# (0: an
+    // empty slot) and each constant buffer's size and address; the vertex buffers' strides and
+    // addresses with their offsets. Buffer addresses the engine's managers place are asked for at
+    // libGnm's draw.
     struct Resources {
-        u64 textures[16], texture_addresses[16], samplers[4];
-        u32 constant_buffer_size[14];
-        u64 constant_buffer_address[14]; // from the buffer manager, at libGnm's draw; 0: none
-        u8 constant_buffers;
+        u32 texture[StageTextureSlots], sampler[16], constant_buffer_size[14];
+        u64 constant_buffer_address[14];
     } stage[StageCount];
-    u8 vertex_buffers, placed;
     u32 vertex_stride[32];
-    u64 vertex_address[32];
+    u64 vertex_address[32]; // 0: an empty slot
+    u64 input_layout;       // the draw state's (+0x0): it decides which slot each attribute reads
 };
 
 struct Pending {
     bool valid;
     Record record;
     u64 context;
-    u64 constant_buffer[StageCount][14]; // the CgConstantBuffer objects, by the record's order
+    u64 constant_buffer[StageCount][14]; // the CgConstantBuffer objects, by slot
     u64 managed_index;                   // the managed index buffer's CgBuffer, and its offset
     u64 managed_index_offset;
-    u64 managed_vertex[32];              // the managed vertex buffers' CgBuffers, by the record's order
+    u64 managed_vertex[32];              // the managed vertex buffers' CgBuffers, by slot
 };
 thread_local Pending pending;
 
@@ -168,64 +168,45 @@ u64 Hash(const void* data, std::size_t size) {
     return hash;
 }
 
-// Bloom filters with two probes per value.
-template <std::size_t Words>
-void Add(u64 (&bloom)[Words], u64 hash) {
-    for (const u64 bit : {hash, hash >> 32}) {
-        bloom[(bit / 64) % Words] |= u64(1) << (bit % 64);
-    }
-}
-template <std::size_t Words>
-bool Contains(const u64 (&bloom)[Words], u64 hash) {
-    for (const u64 bit : {hash, hash >> 32}) {
-        if (!(bloom[(bit / 64) % Words] & u64(1) << (bit % 64))) {
-            return false;
-        }
-    }
-    return true;
+// A slot's value: a 32-bit hash, never 0 (0 marks an empty slot).
+u32 SlotHash(const void* data, std::size_t size) {
+    const u64 hash = Hash(data, size);
+    return u32(hash ^ hash >> 32) | 1;
 }
 
 void ReadResources(u64 state, Record& d) {
     for (int s = 0; s < StageCount; ++s) {
         const u64 stage = state + Stages + s * StageSize;
         auto& r = d.stage[s];
-        r = {};
         if (!Read<u64>(stage + StageShader)) {
             continue;
         }
         for (u32 i = 0; i < StageTextureSlots; ++i) {
             if (const u64 texture = Read<u64>(stage + StageTextures + 8 * i)) {
-                AmdGpu::Image sharp;
-                std::memcpy(&sharp, reinterpret_cast<const void*>(texture + TextureSharp), sizeof(sharp));
-                Add(r.textures, Hash(&sharp, sizeof(sharp)));
-                const u64 address = sharp.Address();
-                Add(r.texture_addresses, Hash(&address, sizeof(address)));
+                r.texture[i] = SlotHash(reinterpret_cast<const void*>(texture + TextureSharp), sizeof(AmdGpu::Image));
             }
         }
         for (u32 i = 0; i < 16; ++i) {
             if (const u64 sampler = Read<u64>(stage + StageSamplers + 8 * i)) {
-                Add(r.samplers, Hash(reinterpret_cast<const void*>(sampler), 16));
+                r.sampler[i] = SlotHash(reinterpret_cast<const void*>(sampler), 16);
             }
         }
         for (u32 i = 0; i < 14; ++i) {
-            if (const u64 buffer = Read<u64>(stage + StageConstantBuffers + 8 * i)) {
-                pending.constant_buffer[s][r.constant_buffers] = buffer;
-                r.constant_buffer_size[r.constant_buffers++] = Read<u32>(buffer + ConstantBufferSize);
-            }
+            const u64 buffer = Read<u64>(stage + StageConstantBuffers + 8 * i);
+            pending.constant_buffer[s][i] = buffer;
+            r.constant_buffer_size[i] = buffer ? Read<u32>(buffer + ConstantBufferSize) : 0;
         }
     }
-    d.vertex_buffers = d.placed = 0;
+    d.input_layout = Read<u64>(state);
     for (u32 i = 0; i < 32; ++i) {
+        pending.managed_vertex[i] = 0;
         if (const u64 buffer = Read<u64>(state + VertexBuffers + 8 * i)) {
-            const u32 n = d.vertex_buffers++;
-            d.vertex_stride[n] = Read<u32>(state + VertexStrides + 4 * i);
-            d.vertex_address[n] = Read<u32>(state + VertexOffsets + 4 * i);
-            pending.managed_vertex[n] = 0;
+            d.vertex_stride[i] = Read<u32>(state + VertexStrides + 4 * i);
+            d.vertex_address[i] = Read<u32>(state + VertexOffsets + 4 * i);
             if (!Read<u8>(buffer + BufferManaged)) {
-                d.vertex_address[n] += Read<u64>(buffer + BufferAddress);
-                ++d.placed;
+                d.vertex_address[i] += Read<u64>(buffer + BufferAddress);
             } else {
-                pending.managed_vertex[n] = buffer; // the offset now, the address at libGnm's draw
+                pending.managed_vertex[i] = buffer; // the offset now, the address at libGnm's draw
             }
         }
     }
@@ -319,10 +300,11 @@ void __attribute__((sysv_abi)) OnGnmDraw(u64, const Core::GuestRegisterSnapshot*
     // The binder has run: the buffer manager knows this draw's constant buffers.
     const u64 manager = pending.context + ContextBufferManager;
     for (int s = 0; s < StageCount; ++s) {
-        auto& resources = pending.record.stage[s];
-        for (u32 i = 0; i < resources.constant_buffers; ++i) {
-            resources.constant_buffer_address[i] = BbGuest::Call<u64>(
-                image_base + BufferManagerAddressOf, manager, pending.constant_buffer[s][i] + ConstantBufferHandle);
+        for (u32 i = 0; i < 14; ++i) {
+            if (const u64 buffer = pending.constant_buffer[s][i]) {
+                pending.record.stage[s].constant_buffer_address[i] = BbGuest::Call<u64>(
+                    image_base + BufferManagerAddressOf, manager, buffer + ConstantBufferHandle);
+            }
         }
     }
     const u64 geometry = pending.context + ContextGeometryManager;
@@ -331,13 +313,12 @@ void __attribute__((sysv_abi)) OnGnmDraw(u64, const Core::GuestRegisterSnapshot*
             BbGuest::Call<u64>(image_base + GeometryManagerAddressOf, geometry, pending.managed_index + BufferHandle) +
             pending.managed_index_offset;
     }
-    for (u32 n = 0; n < pending.record.vertex_buffers; ++n) {
+    for (u32 n = 0; n < 32; ++n) {
         if (pending.managed_vertex[n]) {
             pending.record.vertex_address[n] +=
                 BbGuest::Call<u64>(image_base + GeometryManagerAddressOf, geometry, pending.managed_vertex[n] + BufferHandle);
         }
     }
-    pending.record.placed = pending.record.vertex_buffers; // every address is known now
     const u64 number = next_number.fetch_add(1, std::memory_order_relaxed);
     pending.record.key = number;
     File(pending.record);
@@ -467,17 +448,42 @@ void CompareOutputs(const Record& d, const AmdGpu::Regs& regs) {
 }
 
 // What the shaders read (the draw-preparation worker's sharps) against the draw state's resources.
-enum Resource {
-    Texture, TextureByAddress, Sampler, ConstantBuffer, ConstantBufferAddress, OtherBuffer, VertexStride,
-    VertexAddress, Resources
-};
-constexpr const char* resource_names[Resources] = {
-    "textures", "textures by address only", "samplers", "constant buffers (stride 16) by size",
-    "constant buffers by the buffer manager's address", "other buffers (by a constant buffer's size)",
-    "vertex buffers by stride", "vertex buffers by address"};
+// What the shaders read (the draw-preparation worker's sharps) against the draw state's slots. For
+// each shader the slots a resource could come from are intersected over its draws: one slot left
+// is the resource's slot; none means it does not come from a fixed slot.
+enum Resource { Texture, Sampler, ConstantBuffer, VertexBuffer, Resources };
+constexpr const char* resource_names[Resources] = {"textures", "samplers", "constant buffers", "vertex attributes"};
 struct ResourceTally {
     u64 read[Resources], found[Resources], unprepared, prepared;
 } resources;
+
+struct SlotMap {
+    std::vector<std::bitset<StageTextureSlots>> images;
+    std::vector<std::bitset<16>> samplers;
+    std::vector<std::bitset<14>> buffers; // constant buffers; the null buffer keeps every bit
+    std::vector<std::bitset<32>> attributes;
+    bool started = false;
+};
+struct PairHash {
+    std::size_t operator()(const std::pair<const void*, u64>& key) const {
+        return std::hash<const void*>()(key.first) ^ std::hash<u64>()(key.second) * 0x9e3779b97f4a7c15ull;
+    }
+};
+// By the shader program; vertex attributes by the vertex program and the draw state's input layout.
+std::unordered_map<std::pair<const void*, u64>, SlotMap, PairHash> slot_maps;
+
+template <std::size_t N>
+void Narrow(std::vector<std::bitset<N>>& list, std::size_t k, const std::bitset<N>& candidates, bool started) {
+    if (list.size() <= k) {
+        list.resize(k + 1);
+        list[k].set();
+    }
+    if (!started) {
+        list[k] = candidates;
+    } else {
+        list[k] &= candidates;
+    }
+}
 
 void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::PreparedDraw* prepared,
                       u64 reg_checksum) {
@@ -488,6 +494,7 @@ void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::P
     }
     ++resources.prepared;
     const bool tessellated = regs.stage_enable.hs_en, geometry = regs.stage_enable.gs_en;
+    const Vulkan::PreparedStage* vertex_stage = nullptr;
     for (u32 i = 0; i < prepared->num_stages; ++i) {
         const Vulkan::PreparedStage& p = prepared->stages[i];
         int s = -1;
@@ -503,74 +510,88 @@ void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::P
         if (s < 0) {
             continue;
         }
+        if (s == Vertex) {
+            vertex_stage = &p;
+        }
         const auto& r = d.stage[s];
+        SlotMap& map = slot_maps[{p.program, 0}];
         for (u32 k = 0; k < p.num_images; ++k) {
-            const AmdGpu::Image& sharp = p.image_sharps[k];
-            const u64 address = sharp.Address();
-            const bool exact = Contains(r.textures, Hash(&sharp, sizeof(sharp)));
-            const bool by_address = Contains(r.texture_addresses, Hash(&address, sizeof(address)));
-            ++resources.read[Texture];
-            resources.found[Texture] += exact;
-            if (!exact) {
-                ++resources.read[TextureByAddress];
-                resources.found[TextureByAddress] += by_address;
+            const u32 hash = SlotHash(&p.image_sharps[k], sizeof(AmdGpu::Image));
+            std::bitset<StageTextureSlots> candidates;
+            for (u32 slot = 0; slot < StageTextureSlots; ++slot) {
+                candidates[slot] = r.texture[slot] == hash;
             }
+            ++resources.read[Texture];
+            resources.found[Texture] += candidates.any();
+            Narrow(map.images, k, candidates, map.started);
         }
         for (u32 k = 0; k < p.num_samplers; ++k) {
+            const u32 hash = SlotHash(&p.sampler_sharps[k], 16);
+            std::bitset<16> candidates;
+            for (u32 slot = 0; slot < 16; ++slot) {
+                candidates[slot] = r.sampler[slot] == hash;
+            }
             ++resources.read[Sampler];
-            resources.found[Sampler] += Contains(r.samplers, Hash(&p.sampler_sharps[k], 16));
+            resources.found[Sampler] += candidates.any();
+            Narrow(map.samplers, k, candidates, map.started);
         }
         for (u32 k = 0; k < p.num_buffers; ++k) {
-            // initAsConstantBuffer: a stride of 16, the size in records of 16 bytes.
             const AmdGpu::Buffer& sharp = p.buffer_sharps[k];
+            std::bitset<14> candidates;
             if (sharp.base_address == 1 && sharp.num_records == 0) {
-                continue; // shadPS4's null buffer, not a resource of the game's
-            }
-            bool found = false, at_address = false;
-            for (u32 j = 0; j < r.constant_buffers; ++j) {
-                found = found || (sharp.stride == 16 && (r.constant_buffer_size[j] + 15) / 16 == sharp.num_records);
-                at_address = at_address || r.constant_buffer_address[j] == sharp.base_address;
-            }
-            const Resource kind = sharp.stride == 16 ? ConstantBuffer : OtherBuffer;
-            ++resources.read[kind];
-            resources.found[kind] += found;
-            if (kind == ConstantBuffer) {
-                ++resources.read[ConstantBufferAddress];
-                resources.found[ConstantBufferAddress] += at_address;
-                if (!at_address && examples_printed[Fields - 2] < 4) {
-                    ++examples_printed[Fields - 2];
-                    std::printf("Render boundary: constant buffer V# %#llx; the manager's first %#llx of %u\n",
-                                static_cast<unsigned long long>(sharp.base_address),
-                                static_cast<unsigned long long>(r.constant_buffer_address[0]), r.constant_buffers);
+                candidates.set(); // shadPS4's null buffer, not a resource of the game's
+            } else {
+                for (u32 slot = 0; slot < 14; ++slot) {
+                    candidates[slot] = r.constant_buffer_address[slot] == sharp.base_address &&
+                                       (r.constant_buffer_size[slot] + 15) / 16 == sharp.num_records;
                 }
+                ++resources.read[ConstantBuffer];
+                resources.found[ConstantBuffer] += candidates.any();
             }
+            Narrow(map.buffers, k, candidates, map.started);
         }
+        map.started = true;
     }
-    if (prepared->vertex.valid) {
+    if (prepared->vertex.valid && vertex_stage) {
+        // One V# per attribute: a slot's address plus the attribute's offset, with the slot's stride.
+        SlotMap& map = slot_maps[{vertex_stage->program, d.input_layout}];
         for (u32 k = 0; k < prepared->vertex.count; ++k) {
             const AmdGpu::Buffer& sharp = prepared->vertex.buffers[k];
-            bool stride = false, address = false;
-            for (u32 j = 0; j < d.vertex_buffers; ++j) {
-                stride = stride || d.vertex_stride[j] == sharp.stride;
-                // One V# per attribute: the buffer's address plus the attribute's offset in a vertex.
-                address = address || sharp.base_address - d.vertex_address[j] < d.vertex_stride[j];
+            std::bitset<32> candidates;
+            for (u32 slot = 0; slot < 32; ++slot) {
+                candidates[slot] = d.vertex_address[slot] && d.vertex_stride[slot] == sharp.stride &&
+                                   sharp.base_address - d.vertex_address[slot] < d.vertex_stride[slot];
             }
-            if (!address && d.placed == d.vertex_buffers && d.vertex_buffers && examples_printed[Fields - 1] < 4) {
-                ++examples_printed[Fields - 1];
-                std::printf("Render boundary: vertex V# %#llx stride %u; the draw state's first %#llx stride %u, "
-                            "base vertex %u, %u buffers\n",
-                            static_cast<unsigned long long>(sharp.base_address), u32(sharp.stride),
-                            static_cast<unsigned long long>(d.vertex_address[0]), d.vertex_stride[0], d.base_vertex,
-                            d.vertex_buffers);
-            }
-            ++resources.read[VertexStride];
-            resources.found[VertexStride] += stride;
-            if (d.placed == d.vertex_buffers) {
-                ++resources.read[VertexAddress];
-                resources.found[VertexAddress] += address;
-            }
+            ++resources.read[VertexBuffer];
+            resources.found[VertexBuffer] += candidates.any();
+            Narrow(map.attributes, k, candidates, map.started);
         }
+        map.started = true;
     }
+}
+
+// How the learnt slot maps stand: per kind, resources with one slot, several, or none.
+void ReportSlotMaps() {
+    u64 one[Resources] = {}, several[Resources] = {}, none[Resources] = {};
+    auto count = [&](Resource kind, const auto& list) {
+        for (const auto& bits : list) {
+            const std::size_t n = bits.count();
+            (n == 1 ? one : n == 0 ? none : several)[kind] += 1;
+        }
+    };
+    for (const auto& [key, map] : slot_maps) {
+        count(Texture, map.images);
+        count(Sampler, map.samplers);
+        count(ConstantBuffer, map.buffers);
+        count(VertexBuffer, map.attributes);
+    }
+    std::printf("Render boundary: slot maps of %zu programs and vertex layouts; one slot/several/none:",
+                slot_maps.size());
+    for (int k = 0; k < Resources; ++k) {
+        std::printf(" %s %llu/%llu/%llu", resource_names[k], static_cast<unsigned long long>(one[k]),
+                    static_cast<unsigned long long>(several[k]), static_cast<unsigned long long>(none[k]));
+    }
+    std::printf("\n");
 }
 
 void Report(u64 now) {
@@ -602,6 +623,7 @@ void Report(u64 now) {
                     static_cast<unsigned long long>(resources.read[k]));
     }
     std::printf("\n");
+    ReportSlotMaps();
     std::fflush(stdout);
     last_report = now;
 }
