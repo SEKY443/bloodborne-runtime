@@ -30,14 +30,14 @@ steps.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 61% `████████████░░░░░░░░` | N0, N1 and N4 done; N5 the default, waiting for acceptance; N6 under way |
+| **R5 · native renderer** | 62% `████████████░░░░░░░░` | N0, N1 and N4 done; N5 the default, waiting for acceptance; N6 under way |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
 | N2 · shaders ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: an inventory of the shader variants the game uses |
 | N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 95% `███████████████████░` | M1–M4 implemented; native Metal the default since 0.9.0 RC 1. Next: acceptance (below) |
-| N6 · engine render boundary | 33% `██████░░░░░░░░░░░░░░` | 2 of 6 steps: the plan and the draws observed ([below](#n6-the-engines-render-boundary)). Next: N6.3, resources and outputs observed |
+| N6 · engine render boundary | 43% `████████░░░░░░░░░░░░` | 3 of 7 steps: the plan, the draws and their output state observed ([below](#n6-the-engines-render-boundary)). Next: N6.4, the resources observed |
 
 ## Now and next
 
@@ -137,18 +137,21 @@ with the draw state's layout in `annotations/structs.h`.
 | Step | Progress | State |
 |---|---|---|
 | N6.1 · the plan | 100% `████████████████████` | This section |
-| N6.2 · draws observed | 100% `████████████████████` | Every draw through the methods matched to its packets; topology, counts, index buffer and shaders compared |
-| N6.3 · resources and outputs observed | 0% `░░░░░░░░░░░░░░░░░░░░` | Next: textures, samplers, constant buffers, vertex buffers, render and depth targets, blend, depth-stencil, rasterizer, viewports and scissors compared the same way |
-| N6.4 · mesh draws from the draw state | 0% `░░░░░░░░░░░░░░░░░░░░` | `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls) recorded from their records; measured against the packet path |
-| N6.5 · the other draw methods | 0% `░░░░░░░░░░░░░░░░░░░░` | Then the deferred lighting's rect lists (below) and the upload ring's geometry |
-| N6.6 · the smaller boundaries | 0% `░░░░░░░░░░░░░░░░░░░░` | Compute passes, render-target passes and Scaleform: each its own boundary, or left to the packet path |
+| N6.2 · draws observed | 100% `████████████████████` | Every draw through the methods matched to its packets; topology, counts, index buffer and shaders agree |
+| N6.3 · output state observed | 100% `████████████████████` | Render and depth targets, blend, depth-stencil, rasterizer, viewport, scissor, stencil reference, blend colour and depth bounds agree |
+| N6.4 · resources observed | 0% `░░░░░░░░░░░░░░░░░░░░` | Next: each stage's textures, samplers and constant buffers, and the vertex buffers, against what the shaders read |
+| N6.5 · mesh draws from the draw state | 0% `░░░░░░░░░░░░░░░░░░░░` | `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls) recorded from their records; measured against the packet path |
+| N6.6 · the other draw methods | 0% `░░░░░░░░░░░░░░░░░░░░` | The deferred lighting's quads and the upload ring's geometry |
+| N6.7 · the smaller boundaries | 0% `░░░░░░░░░░░░░░░░░░░░` | Compute passes, render-target passes (including the methods' own fast-clear resolves) and Scaleform: each its own boundary, or left to the packet path |
 
 ### How a draw reaches the renderer
 
 - **Tags in the stream.** An entry hook on each draw method reads the draw state it is given into
   a record (`gpu/shim/bbport_render_boundary.cpp`). A hook on libGnm's draw functions files the
   record under a number and writes a three-dword PM4 NOP with that number just before the draw's
-  packet. The GPU ignores the NOP; the engine copies its recorded commands into the buffers it
+  packet, for the method's own draw only (the libGnm call returning into the method): a method
+  that changes a render target first resolves the old one's fast clear with a draw of its own,
+  which keeps the packet path. The GPU ignores the NOP; the engine copies its recorded commands into the buffers it
   submits, and the tag travels with them. The packet reader, meeting the tag and then the draw,
   knows which record the draw is.
 - **One stream, one order.** A draw taken over is still recorded where its packet stands in the
@@ -170,25 +173,28 @@ with the draw state's layout in `annotations/structs.h`.
 - **Bindings.** Each stage's samplers (S#), textures (T#) and constant buffers (V#s made from
   address and size) are the resources the engine's binder copies into its descriptor tables.
   Which binding slot each lands in is given by the shader's resource table, as the packet path
-  finds it today; N6.3 checks that the draw state's resources are the ones the shader reads.
+  finds it today; N6.4 checks that the draw state's resources are the ones the shader reads.
 - **Vertex and index buffers.** 32 vertex buffers with strides and offsets; the index buffer with
   its DXGI format and byte offset. Buffers the context's buffer manager places (`managed`) take
   their address from the manager.
 
-### What the observer found (N6.2)
+### What the observer found (N6.2, N6.3)
 
 `BB_RENDER_BOUNDARY=observe` (not with `BB_DRAW_CENSUS=1`) compares each tagged draw with the
 registers the packet reader decoded, every 5 seconds in the log. In a two-minute run (M3 Pro,
-the test save, translator, 37.6 FPS against 36.2–37.0 in untagged runs that day, no faults):
+the test save, translator, no faults):
 
-- 2,986,163 draws went through the methods; 2,985,011 (99.96%) reached the reader with their tag.
-  The 310,001 draw packets without one are the 310,026 libGnm draws made outside the methods.
-- Agreeing: index type, index start and instance counts (100% of 1.94, 1.93 and 0.10 million);
-  the hull, domain and geometry shaders (100% of 212,527, 212,527 and 5,883); topology, counts
-  and the vertex and pixel shaders in 99.73%.
-- The 0.27% that differ are one pattern: a draw state with a four-vertex triangle strip that the
-  engine draws as a three-vertex rect list with shaders of its own (full-screen and screen-aligned
-  quads). Taking those over means drawing the rect list, not the draw state's strip.
+- 3,006,657 draws went through the methods and were tagged; 3,004,963 (99.94%) reached the reader
+  with their tag. The 311,385 draw packets without one are the 295,520 libGnm draws made outside
+  the methods and the 15,906 fast-clear resolves the methods make themselves.
+- Every field compared agrees in every tagged draw: topology, counts, index type and start,
+  instances; the five stages' shaders; the colour and depth targets, the target mask, blend,
+  depth-stencil and stencil operations, clip and primitive setup, viewport 0, the stencil
+  reference, blend colour and depth bounds. The draw state's scissor applies only when its
+  rasterizer block enables the viewport scissor (`scan_mode[1]`, 738,110 draws); then it agrees
+  too. So for these draws the draw state alone says what the packets say.
+- Observing costs frame rate: 34.2–34.9 FPS with every comparison, 37.4–37.6 with the first
+  ones, 36.2–37.0 without it that day. It is a diagnostic only.
 
 ## The Metal backend today (N5)
 
