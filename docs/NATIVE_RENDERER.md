@@ -30,14 +30,14 @@ steps.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 65% `█████████████░░░░░░░` | N0, N1 and N4 done; N5 the default, waiting for acceptance; N6 under way |
+| **R5 · native renderer** | 66% `█████████████░░░░░░░` | N0, N1 and N4 done; N5 the default, waiting for acceptance; N6 under way |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
 | N2 · shaders ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: an inventory of the shader variants the game uses |
 | N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 95% `███████████████████░` | M1–M4 implemented; native Metal the default since 0.9.0 RC 1. Next: acceptance (below) |
-| N6 · engine render boundary | 64% `████████████░░░░░░░░` | 4 of 7 steps, and N6.5 half done: every input of a draw found from the draw state, and each shader resource's slot in it ([below](#n6-the-engines-render-boundary)). Next: mesh draws recorded from the draw state |
+| N6 · engine render boundary | 67% `█████████████░░░░░░░` | 4 of 7 steps, and three quarters of N6.5: mesh draws bind their resources from the draw state (`BB_RENDER_BOUNDARY=mesh`) ([below](#n6-the-engines-render-boundary)). Next: the user-data walk skipped for them, measured |
 
 ## Now and next
 
@@ -140,7 +140,7 @@ with the draw state's layout in `annotations/structs.h`.
 | N6.2 · draws observed | 100% `████████████████████` | Every draw through the methods matched to its packets; topology, counts, index buffer and shaders agree |
 | N6.3 · output state observed | 100% `████████████████████` | Render and depth targets, blend, depth-stencil, rasterizer, viewport, scissor, stencil reference, blend colour and depth bounds agree |
 | N6.4 · resources observed | 100% `████████████████████` | The textures, samplers, constant buffers and vertex buffers the shaders read are the draw state's |
-| N6.5 · mesh draws from the draw state | 50% `██████████░░░░░░░░░░` | `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls) recorded from their records, in four parts: the buffers' addresses from the engine's managers (done); each shader resource's slot in the draw state (done); the draw recorded from the record behind a switch (next); measured against the packet path |
+| N6.5 · mesh draws from the draw state | 75% `███████████████░░░░░` | `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls) recorded from their records, in four parts: the buffers' addresses from the engine's managers (done); each shader resource's slot in the draw state (done); their resources bound from the record behind `BB_RENDER_BOUNDARY=mesh` (done); the draw-preparation workers' user-data walk skipped for them, and measured against the packet path (next) |
 | N6.6 · the other draw methods | 0% `░░░░░░░░░░░░░░░░░░░░` | The deferred lighting's quads and the upload ring's geometry |
 | N6.7 · the smaller boundaries | 0% `░░░░░░░░░░░░░░░░░░░░` | Compute passes, render-target passes (including the methods' own fast-clear resolves) and Scaleform: each its own boundary, or left to the packet path |
 
@@ -217,6 +217,13 @@ the test save, translator, no faults):
   that always held the same value, so any of them gives the right resource. Samplers are often
   identical across slots (50 one, 159 several); one fits no slot, most likely the engine's default
   sampler for an empty slot (not checked yet).
+- Mesh draws from the draw state (N6.5, `BB_RENDER_BOUNDARY=mesh`): the textures, samplers,
+  constant buffers and vertex buffers of every mesh draw whose slot maps are known are replaced,
+  before the draw is recorded, by the ones the draw state names (T#s and S#s read from the
+  engine's objects, buffer addresses from its managers, each vertex attribute at its slot's
+  address plus its learnt offset). In two minutes 1,941,705 mesh draws took 50,453,065 resources
+  this way, none differing from the user data's; 35.7 FPS, no faults. Nothing is saved yet: the
+  workers still walk the user data and the hooks add their own cost.
 - Observing costs frame rate: 34.2–34.9 FPS with every comparison, 37.4–37.6 with the first
   ones, 36.2–37.0 without it that day. It is a diagnostic only.
 

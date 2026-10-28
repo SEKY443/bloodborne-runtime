@@ -32,6 +32,7 @@ using u64 = std::uint64_t;
 using u32 = std::uint32_t;
 using u8 = std::uint8_t;
 using s32 = std::int32_t;
+using s64 = std::int64_t;
 
 enum Method : u32 { Draw, DrawIndexed, DrawInstanced, DrawIndexedInstanced, DrawIndirect, DrawIndexedIndirect, Methods };
 constexpr const char* method_names[Methods] = {"draw", "drawIndexed", "drawInstanced", "drawIndexedInstanced",
@@ -47,6 +48,7 @@ constexpr u64 gnm_offsets[] = {
     0x10746f0, // drawIndexIndirect
 };
 constexpr u64 GnmTag = 0x100;
+constexpr u64 MeshDraw = 0x21d0640, MeshDrawSize = 2621; // CG::MeshRenderer::drawMesh
 
 // CgDrawState (annotations/structs.h).
 constexpr u64 Topology = 0x8, IndexBuffer = 0x10, IndexFormat = 0x18, IndexOffset = 0x1c, Stages = 0x598,
@@ -77,6 +79,7 @@ constexpr u32 NopTwoDwords = 0xc0011000;
 struct Record {
     u64 key; // the record's number
     u32 method, topology, index_format, count, instances, base_vertex;
+    bool mesh; // made by CG::MeshRenderer::drawMesh
     u64 index_start; // the first index's address; 0 when unknown (a managed buffer)
     u64 shader[StageCount];
     // The output state; a block the draw state leaves NULL (the engine's defaults) is not compared.
@@ -86,12 +89,13 @@ struct Record {
     float viewport[6], blend_color[4], depth_bounds[2];
     s32 scissor[4];
     u64 color_target[8], depth_target; // the targets' addresses; 0 for none
-    // The resources by slot: per stage a 32-bit hash of each texture's T# and sampler's S# (0: an
-    // empty slot) and each constant buffer's size and address; the vertex buffers' strides and
-    // addresses with their offsets. Buffer addresses the engine's managers place are asked for at
-    // libGnm's draw.
+    // The resources by slot: per stage the texture and sampler objects (0: an empty slot; their
+    // T#s and S#s are read on the GPU thread, as the GPU reads the binder's tables) and each
+    // constant buffer's size and address; the vertex buffers' strides and addresses with their
+    // offsets. Buffer addresses the engine's managers place are asked for at libGnm's draw.
     struct Resources {
-        u32 texture[StageTextureSlots], sampler[16], constant_buffer_size[14];
+        u64 texture[StageTextureSlots], sampler[16];
+        u32 constant_buffer_size[14];
         u64 constant_buffer_address[14];
     } stage[StageCount];
     u32 vertex_stride[32];
@@ -111,13 +115,14 @@ struct Pending {
 thread_local Pending pending;
 
 // Records by number, in a ring; a sequence word per slot (odd while written).
-constexpr std::size_t Slots = 1 << 14;
+constexpr std::size_t Slots = 1 << 13;
 struct Slot {
     std::atomic<u32> sequence;
     Record record;
 };
 Slot* slots = nullptr;
 bool observing = false;
+bool take_mesh_draws = false; // BB_RENDER_BOUNDARY=mesh
 u64 image_base = 0;
 std::atomic<u64> method_calls[Methods], filed{0}, gnm_without_method{0}, gnm_nested{0}, no_room{0}, next_number{1};
 
@@ -182,14 +187,10 @@ void ReadResources(u64 state, Record& d) {
             continue;
         }
         for (u32 i = 0; i < StageTextureSlots; ++i) {
-            if (const u64 texture = Read<u64>(stage + StageTextures + 8 * i)) {
-                r.texture[i] = SlotHash(reinterpret_cast<const void*>(texture + TextureSharp), sizeof(AmdGpu::Image));
-            }
+            r.texture[i] = Read<u64>(stage + StageTextures + 8 * i);
         }
         for (u32 i = 0; i < 16; ++i) {
-            if (const u64 sampler = Read<u64>(stage + StageSamplers + 8 * i)) {
-                r.sampler[i] = SlotHash(reinterpret_cast<const void*>(sampler), 16);
-            }
+            r.sampler[i] = Read<u64>(stage + StageSamplers + 8 * i);
         }
         for (u32 i = 0; i < 14; ++i) {
             const u64 buffer = Read<u64>(stage + StageConstantBuffers + 8 * i);
@@ -218,6 +219,8 @@ void __attribute__((sysv_abi)) OnMethod(u64 tag, const Core::GuestRegisterSnapsh
     d = {};
     d.method = u32(tag);
     pending.context = r->rdi;
+    // Called from the mesh draw: its return address is in CG::MeshRenderer::drawMesh.
+    d.mesh = Read<u64>(r->rsp) - image_base - MeshDraw < MeshDrawSize;
     const u64 state = r->rsi;
     const u32 a = u32(r->rdx), b = u32(r->rcx), c = u32(r->r8);
     u32 first_index = 0;
@@ -462,6 +465,7 @@ struct SlotMap {
     std::vector<std::bitset<16>> samplers;
     std::vector<std::bitset<14>> buffers; // constant buffers; the null buffer keeps every bit
     std::vector<std::bitset<32>> attributes;
+    std::vector<s64> attribute_offsets; // the V#'s address less its slot's; INT64_MIN: not fixed
     bool started = false;
 };
 struct PairHash {
@@ -485,6 +489,80 @@ void Narrow(std::vector<std::bitset<N>>& list, std::size_t k, const std::bitset<
     }
 }
 
+template <std::size_t N>
+u32 FirstSlot(const std::bitset<N>& bits) {
+    for (u32 i = 0; i < N; ++i) {
+        if (bits[i]) {
+            return i;
+        }
+    }
+    return N;
+}
+
+// BB_RENDER_BOUNDARY=mesh: a mesh draw's resources from the draw state, through the slot maps, in
+// place of the ones the draw-preparation worker read from the user data. The arrays are the
+// submission's; the GPU thread binds from them after this.
+struct Taken {
+    u64 draws, resources, differed;
+} taken;
+
+static_assert(sizeof(AmdGpu::Sampler) == 16 && sizeof(AmdGpu::Image) == 32, "the S# and T# copied from the engine");
+
+template <typename T>
+void Take(const T& from, const T& into_const) {
+    T& into = const_cast<T&>(into_const);
+    ++taken.resources;
+    if (std::memcmp(&from, &into, sizeof(T)) != 0) {
+        ++taken.differed;
+        std::memcpy(&into, &from, sizeof(T));
+    }
+}
+
+void TakeResources(const Vulkan::PreparedStage& p, const Record::Resources& r, const SlotMap& map) {
+    for (u32 k = 0; k < p.num_images && k < map.images.size(); ++k) {
+        const u32 slot = FirstSlot(map.images[k]);
+        if (slot < StageTextureSlots && r.texture[slot]) {
+            AmdGpu::Image sharp;
+            std::memcpy(&sharp, reinterpret_cast<const void*>(r.texture[slot] + TextureSharp), sizeof(sharp));
+            Take(sharp, p.image_sharps[k]);
+        }
+    }
+    for (u32 k = 0; k < p.num_samplers && k < map.samplers.size(); ++k) {
+        const u32 slot = FirstSlot(map.samplers[k]);
+        if (slot < 16 && r.sampler[slot]) {
+            AmdGpu::Sampler sharp;
+            std::memcpy(&sharp, reinterpret_cast<const void*>(r.sampler[slot]), sizeof(sharp));
+            Take(sharp, p.sampler_sharps[k]);
+        }
+    }
+    for (u32 k = 0; k < p.num_buffers && k < map.buffers.size(); ++k) {
+        const AmdGpu::Buffer& worker = p.buffer_sharps[k];
+        const u32 slot = FirstSlot(map.buffers[k]);
+        if (map.buffers[k].all() || slot >= 14 || !r.constant_buffer_address[slot]) {
+            continue; // the null buffer, or no slot
+        }
+        AmdGpu::Buffer sharp = worker; // initAsConstantBuffer's other fields
+        sharp.base_address = r.constant_buffer_address[slot];
+        sharp.num_records = (r.constant_buffer_size[slot] + 15) / 16;
+        Take(sharp, worker);
+    }
+}
+
+void TakeVertexBuffers(const Vulkan::PreparedDraw& prepared, const Record& d, const SlotMap& map) {
+    for (u32 k = 0; k < prepared.vertex.count && k < map.attributes.size(); ++k) {
+        const u32 slot = FirstSlot(map.attributes[k]);
+        const s64 offset = k < map.attribute_offsets.size() ? map.attribute_offsets[k] : INT64_MIN;
+        if (slot >= 32 || offset == INT64_MIN || !d.vertex_address[slot]) {
+            continue;
+        }
+        const AmdGpu::Buffer& worker = prepared.vertex.buffers[k];
+        AmdGpu::Buffer sharp = worker; // the format and record count are the attribute's
+        sharp.base_address = d.vertex_address[slot] + offset;
+        sharp.stride = d.vertex_stride[slot];
+        Take(sharp, worker);
+    }
+}
+
 void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::PreparedDraw* prepared,
                       u64 reg_checksum) {
     if (!prepared || prepared->state.load(std::memory_order_acquire) != Vulkan::PreparedDraw::Ready ||
@@ -493,6 +571,7 @@ void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::P
         return;
     }
     ++resources.prepared;
+    taken.draws += take_mesh_draws && d.mesh;
     const bool tessellated = regs.stage_enable.hs_en, geometry = regs.stage_enable.gs_en;
     const Vulkan::PreparedStage* vertex_stage = nullptr;
     for (u32 i = 0; i < prepared->num_stages; ++i) {
@@ -514,12 +593,22 @@ void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::P
             vertex_stage = &p;
         }
         const auto& r = d.stage[s];
+        u32 texture_hash[StageTextureSlots], sampler_hash[16];
+        for (u32 slot = 0; slot < StageTextureSlots; ++slot) {
+            texture_hash[slot] = r.texture[slot]
+                                     ? SlotHash(reinterpret_cast<const void*>(r.texture[slot] + TextureSharp),
+                                                sizeof(AmdGpu::Image))
+                                     : 0;
+        }
+        for (u32 slot = 0; slot < 16; ++slot) {
+            sampler_hash[slot] = r.sampler[slot] ? SlotHash(reinterpret_cast<const void*>(r.sampler[slot]), 16) : 0;
+        }
         SlotMap& map = slot_maps[{p.program, 0}];
         for (u32 k = 0; k < p.num_images; ++k) {
             const u32 hash = SlotHash(&p.image_sharps[k], sizeof(AmdGpu::Image));
             std::bitset<StageTextureSlots> candidates;
             for (u32 slot = 0; slot < StageTextureSlots; ++slot) {
-                candidates[slot] = r.texture[slot] == hash;
+                candidates[slot] = texture_hash[slot] == hash;
             }
             ++resources.read[Texture];
             resources.found[Texture] += candidates.any();
@@ -529,7 +618,7 @@ void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::P
             const u32 hash = SlotHash(&p.sampler_sharps[k], 16);
             std::bitset<16> candidates;
             for (u32 slot = 0; slot < 16; ++slot) {
-                candidates[slot] = r.sampler[slot] == hash;
+                candidates[slot] = sampler_hash[slot] == hash;
             }
             ++resources.read[Sampler];
             resources.found[Sampler] += candidates.any();
@@ -551,6 +640,9 @@ void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::P
             Narrow(map.buffers, k, candidates, map.started);
         }
         map.started = true;
+        if (take_mesh_draws && d.mesh) {
+            TakeResources(p, r, map);
+        }
     }
     if (prepared->vertex.valid && vertex_stage) {
         // One V# per attribute: a slot's address plus the attribute's offset, with the slot's stride.
@@ -565,8 +657,20 @@ void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::P
             ++resources.read[VertexBuffer];
             resources.found[VertexBuffer] += candidates.any();
             Narrow(map.attributes, k, candidates, map.started);
+            if (map.attribute_offsets.size() <= k) {
+                map.attribute_offsets.resize(k + 1, INT64_MIN);
+            }
+            if (candidates.any()) {
+                const u32 slot = FirstSlot(candidates);
+                const s64 offset = s64(sharp.base_address) - s64(d.vertex_address[slot]);
+                s64& known = map.attribute_offsets[k];
+                known = !map.started ? offset : known == offset ? known : INT64_MIN;
+            }
         }
         map.started = true;
+        if (take_mesh_draws && d.mesh) {
+            TakeVertexBuffers(*prepared, d, map);
+        }
     }
 }
 
@@ -624,6 +728,12 @@ void Report(u64 now) {
     }
     std::printf("\n");
     ReportSlotMaps();
+    if (take_mesh_draws) {
+        std::printf("Render boundary: mesh draws from the draw state %llu, resources taken %llu, differing from the "
+                    "user data's %llu\n",
+                    static_cast<unsigned long long>(taken.draws), static_cast<unsigned long long>(taken.resources),
+                    static_cast<unsigned long long>(taken.differed));
+    }
     std::fflush(stdout);
     last_report = now;
 }
@@ -700,7 +810,7 @@ void ObserveDraw(const void* packet, const AmdGpu::Regs& regs, bool indexed, u32
 
 void PatchImage(unsigned char* image, std::uint64_t) {
     const char* env = std::getenv("BB_RENDER_BOUNDARY");
-    if (!env || std::strcmp(env, "observe") != 0) {
+    if (!env || (std::strcmp(env, "observe") != 0 && std::strcmp(env, "mesh") != 0)) {
         return;
     }
     const char* census = std::getenv("BB_DRAW_CENSUS");
@@ -736,7 +846,9 @@ void PatchImage(unsigned char* image, std::uint64_t) {
         ++wanted;
     }
     observing = installed == wanted;
-    std::printf("Render boundary: observing draws (%d of %d hooks)\n", installed, wanted);
+    take_mesh_draws = observing && std::strcmp(env, "mesh") == 0;
+    std::printf("Render boundary: observing draws%s (%d of %d hooks)\n",
+                take_mesh_draws ? ", mesh draws' resources from the draw state" : "", installed, wanted);
     last_report = NowMs();
 }
 
