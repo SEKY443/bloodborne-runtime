@@ -10,6 +10,9 @@
 namespace AmdGpu {
 union Regs;
 }
+namespace Vulkan {
+struct PreparedDraw;
+}
 
 namespace BbRenderBoundary {
 
@@ -28,8 +31,10 @@ void NoteTag(const void* nop);
 
 /// The packet reader, at a draw packet in the game's own command buffer, with the registers it
 /// draws with. `indexed`: DrawIndex2 or DrawIndexOffset2; `index_offset`: DrawIndexOffset2's first
-/// index (0 otherwise); `indirect`: the counts are in memory.
+/// index (0 otherwise); `indirect`: the counts are in memory. `prepared`: the draw-preparation
+/// worker's resources for the draw (null if none), valid when ready and its register checksum is
+/// `reg_checksum`.
 void ObserveDraw(const void* packet, const AmdGpu::Regs& regs, bool indexed, std::uint32_t index_offset,
-                 bool indirect);
+                 bool indirect, const Vulkan::PreparedDraw* prepared, std::uint64_t reg_checksum);
 
 } // namespace BbRenderBoundary

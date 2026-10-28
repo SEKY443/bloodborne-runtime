@@ -12,6 +12,8 @@
 #include "bbport_guest_code_hooks.h"
 
 #include "video_core/amdgpu/regs.h"
+#include "video_core/amdgpu/resource.h"
+#include "video_core/renderer_vulkan/vk_draw_prep.h"
 
 #include <atomic>
 #include <chrono>
@@ -47,7 +49,9 @@ constexpr u64 Topology = 0x8, IndexBuffer = 0x10, IndexFormat = 0x18, IndexOffse
               StageSize = 0x4f8, StageShader = 0x4f0, ShaderCode = 0x108, BufferAddress = 0x20, BufferManaged = 0x40,
               Rasterizer = 0x240, Viewports = 0x248, Scissors = 0x3c8, Blend = 0x4d0, DepthStencil = 0x4d8,
               RenderTargets = 0x4e0, DepthTarget = 0x520, BlendColor = 0x568, DepthBounds = 0x578,
-              StencilReference = 0x584, ScissorEnable = 0x15;
+              StencilReference = 0x584, ScissorEnable = 0x15, VertexBuffers = 0x20, VertexStrides = 0x120,
+              VertexOffsets = 0x1a0, StageSamplers = 0x0, StageTextures = 0x80, StageTextureSlots = 128,
+              StageConstantBuffers = 0x480, TextureSharp = 0x10, ConstantBufferSize = 0x2c;
 // A render or depth target object holds libGnm's RenderTarget or DepthRenderTarget at +0x10
 // (CG::OutputMergerState::apply passes that to setRenderTarget and setDepthRenderTarget); their
 // CB_COLOR_BASE is the first register, DB_Z_READ_BASE the third (the address shifted by 8).
@@ -61,7 +65,7 @@ constexpr u32 NopTwoDwords = 0xc0011000;
 
 struct Record {
     u64 key; // the record's number
-    u32 method, topology, index_format, count, instances;
+    u32 method, topology, index_format, count, instances, base_vertex;
     u64 index_start; // the first index's address; 0 when unknown (a managed buffer)
     u64 shader[StageCount];
     // The output state; a block the draw state leaves NULL (the engine's defaults) is not compared.
@@ -71,6 +75,19 @@ struct Record {
     float viewport[6], blend_color[4], depth_bounds[2];
     s32 scissor[4];
     u64 color_target[8], depth_target; // the targets' addresses; 0 for none
+    // The resources, compactly: per stage Bloom filters of its textures (the T#s, and their
+    // addresses) and samplers (the S#s), and its constant buffers' sizes; the vertex buffers'
+    // strides, and the addresses of those the draw state places itself. Constant buffers and most
+    // vertex buffers are placed by the context's buffer manager, which looks their addresses up in
+    // a table of its own, so their addresses are not compared yet.
+    struct Resources {
+        u64 textures[16], texture_addresses[16], samplers[4];
+        u32 constant_buffer_size[14];
+        u8 constant_buffers;
+    } stage[StageCount];
+    u8 vertex_buffers, placed;
+    u32 vertex_stride[32];
+    u64 vertex_address[32];
 };
 
 struct Pending {
@@ -80,7 +97,7 @@ struct Pending {
 thread_local Pending pending;
 
 // Records by number, in a ring; a sequence word per slot (odd while written).
-constexpr std::size_t Slots = 1 << 16;
+constexpr std::size_t Slots = 1 << 14;
 struct Slot {
     std::atomic<u32> sequence;
     Record record;
@@ -127,6 +144,75 @@ T Read(u64 address) {
     return value;
 }
 
+u64 Hash(const void* data, std::size_t size) {
+    u64 hash = 0xcbf29ce484222325ull, word;
+    for (std::size_t i = 0; i < size; i += 8) {
+        std::memcpy(&word, static_cast<const u8*>(data) + i, 8);
+        hash = (hash ^ word) * 0x100000001b3ull;
+        hash ^= hash >> 29;
+    }
+    return hash;
+}
+
+// Bloom filters with two probes per value.
+template <std::size_t Words>
+void Add(u64 (&bloom)[Words], u64 hash) {
+    for (const u64 bit : {hash, hash >> 32}) {
+        bloom[(bit / 64) % Words] |= u64(1) << (bit % 64);
+    }
+}
+template <std::size_t Words>
+bool Contains(const u64 (&bloom)[Words], u64 hash) {
+    for (const u64 bit : {hash, hash >> 32}) {
+        if (!(bloom[(bit / 64) % Words] & u64(1) << (bit % 64))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void ReadResources(u64 state, Record& d) {
+    for (int s = 0; s < StageCount; ++s) {
+        const u64 stage = state + Stages + s * StageSize;
+        auto& r = d.stage[s];
+        r = {};
+        if (!Read<u64>(stage + StageShader)) {
+            continue;
+        }
+        for (u32 i = 0; i < StageTextureSlots; ++i) {
+            if (const u64 texture = Read<u64>(stage + StageTextures + 8 * i)) {
+                AmdGpu::Image sharp;
+                std::memcpy(&sharp, reinterpret_cast<const void*>(texture + TextureSharp), sizeof(sharp));
+                Add(r.textures, Hash(&sharp, sizeof(sharp)));
+                const u64 address = sharp.Address();
+                Add(r.texture_addresses, Hash(&address, sizeof(address)));
+            }
+        }
+        for (u32 i = 0; i < 16; ++i) {
+            if (const u64 sampler = Read<u64>(stage + StageSamplers + 8 * i)) {
+                Add(r.samplers, Hash(reinterpret_cast<const void*>(sampler), 16));
+            }
+        }
+        for (u32 i = 0; i < 14; ++i) {
+            if (const u64 buffer = Read<u64>(stage + StageConstantBuffers + 8 * i)) {
+                r.constant_buffer_size[r.constant_buffers++] = Read<u32>(buffer + ConstantBufferSize);
+            }
+        }
+    }
+    d.vertex_buffers = d.placed = 0;
+    for (u32 i = 0; i < 32; ++i) {
+        if (const u64 buffer = Read<u64>(state + VertexBuffers + 8 * i)) {
+            const u32 n = d.vertex_buffers++;
+            d.vertex_stride[n] = Read<u32>(state + VertexStrides + 4 * i);
+            d.vertex_address[n] = 0;
+            if (!Read<u8>(buffer + BufferManaged)) {
+                d.vertex_address[n] = Read<u64>(buffer + BufferAddress) + Read<u32>(state + VertexOffsets + 4 * i);
+                ++d.placed;
+            }
+        }
+    }
+}
+
 void __attribute__((sysv_abi)) OnMethod(u64 tag, const Core::GuestRegisterSnapshot* r) {
     method_calls[tag].fetch_add(1, std::memory_order_relaxed);
     Record& d = pending.record;
@@ -136,10 +222,10 @@ void __attribute__((sysv_abi)) OnMethod(u64 tag, const Core::GuestRegisterSnapsh
     const u32 a = u32(r->rdx), b = u32(r->rcx), c = u32(r->r8);
     u32 first_index = 0;
     switch (tag) {
-    case Draw: d.count = a, d.instances = 1; break;
-    case DrawIndexed: d.count = a, first_index = b, d.instances = 1; break;
-    case DrawInstanced: d.count = a, d.instances = b; break;
-    case DrawIndexedInstanced: d.count = a, d.instances = b, first_index = c; break;
+    case Draw: d.count = a, d.instances = 1, d.base_vertex = b; break;
+    case DrawIndexed: d.count = a, first_index = b, d.instances = 1, d.base_vertex = c; break;
+    case DrawInstanced: d.count = a, d.instances = b, d.base_vertex = c; break;
+    case DrawIndexedInstanced: d.count = a, d.instances = b, first_index = c, d.base_vertex = u32(r->r9); break;
     default: break; // indirect: the counts are in memory
     }
     d.topology = Read<u32>(state + Topology);
@@ -183,6 +269,7 @@ void __attribute__((sysv_abi)) OnMethod(u64 tag, const Core::GuestRegisterSnapsh
     }
     const u64 depth = Read<u64>(state + DepthTarget);
     d.depth_target = depth ? u64(Read<u32>(depth + GnmTarget + DepthReadBase)) << 8 : 0;
+    ReadResources(state, d);
     pending.valid = true;
 }
 
@@ -334,6 +421,101 @@ void CompareOutputs(const Record& d, const AmdGpu::Regs& regs) {
     }
 }
 
+// What the shaders read (the draw-preparation worker's sharps) against the draw state's resources.
+enum Resource {
+    Texture, TextureByAddress, Sampler, ConstantBuffer, OtherBuffer, VertexStride, VertexAddress, Resources
+};
+constexpr const char* resource_names[Resources] = {
+    "textures", "textures by address only", "samplers", "constant buffers (stride 16) by size",
+    "other buffers (by a constant buffer's size)", "vertex buffers by stride",
+    "vertex buffers of draws whose buffers the draw state places, by address"};
+struct ResourceTally {
+    u64 read[Resources], found[Resources], unprepared, prepared;
+} resources;
+
+void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::PreparedDraw* prepared,
+                      u64 reg_checksum) {
+    if (!prepared || prepared->state.load(std::memory_order_acquire) != Vulkan::PreparedDraw::Ready ||
+        prepared->reg_checksum != reg_checksum) {
+        ++resources.unprepared;
+        return;
+    }
+    ++resources.prepared;
+    const bool tessellated = regs.stage_enable.hs_en, geometry = regs.stage_enable.gs_en;
+    for (u32 i = 0; i < prepared->num_stages; ++i) {
+        const Vulkan::PreparedStage& p = prepared->stages[i];
+        int s = -1;
+        switch (p.hw_stage) {
+        case Shader::HwStage::Fragment: s = Pixel; break;
+        case Shader::HwStage::Local: s = Vertex; break;
+        case Shader::HwStage::Hull: s = Hull; break;
+        case Shader::HwStage::Geometry: s = Geometry; break;
+        case Shader::HwStage::Export: s = tessellated ? Domain : Vertex; break;
+        case Shader::HwStage::Vertex: s = geometry ? -1 : tessellated ? Domain : Vertex; break; // -1: GS copy shader
+        default: break;
+        }
+        if (s < 0) {
+            continue;
+        }
+        const auto& r = d.stage[s];
+        for (u32 k = 0; k < p.num_images; ++k) {
+            const AmdGpu::Image& sharp = p.image_sharps[k];
+            const u64 address = sharp.Address();
+            const bool exact = Contains(r.textures, Hash(&sharp, sizeof(sharp)));
+            const bool by_address = Contains(r.texture_addresses, Hash(&address, sizeof(address)));
+            ++resources.read[Texture];
+            resources.found[Texture] += exact;
+            if (!exact) {
+                ++resources.read[TextureByAddress];
+                resources.found[TextureByAddress] += by_address;
+            }
+        }
+        for (u32 k = 0; k < p.num_samplers; ++k) {
+            ++resources.read[Sampler];
+            resources.found[Sampler] += Contains(r.samplers, Hash(&p.sampler_sharps[k], 16));
+        }
+        for (u32 k = 0; k < p.num_buffers; ++k) {
+            // initAsConstantBuffer: a stride of 16, the size in records of 16 bytes.
+            const AmdGpu::Buffer& sharp = p.buffer_sharps[k];
+            if (sharp.base_address == 1 && sharp.num_records == 0) {
+                continue; // shadPS4's null buffer, not a resource of the game's
+            }
+            bool found = false;
+            for (u32 j = 0; j < r.constant_buffers; ++j) {
+                found = found || (sharp.stride == 16 && (r.constant_buffer_size[j] + 15) / 16 == sharp.num_records);
+            }
+            const Resource kind = sharp.stride == 16 ? ConstantBuffer : OtherBuffer;
+            ++resources.read[kind];
+            resources.found[kind] += found;
+        }
+    }
+    if (prepared->vertex.valid) {
+        for (u32 k = 0; k < prepared->vertex.count; ++k) {
+            const AmdGpu::Buffer& sharp = prepared->vertex.buffers[k];
+            bool stride = false, address = false;
+            for (u32 j = 0; j < d.vertex_buffers; ++j) {
+                stride = stride || d.vertex_stride[j] == sharp.stride;
+                // One V# per attribute: the buffer's address plus the attribute's offset in a vertex.
+                address = address || sharp.base_address - d.vertex_address[j] < d.vertex_stride[j];
+            }
+            if (!address && d.placed == d.vertex_buffers && d.vertex_buffers && examples_printed[Fields - 1] < 4) {
+                ++examples_printed[Fields - 1];
+                std::printf("Render boundary: vertex V# %#llx stride %u; the draw state's first %#llx stride %u, "
+                            "base vertex %u, %u buffers\n",
+                            static_cast<unsigned long long>(sharp.base_address), u32(sharp.stride),
+                            static_cast<unsigned long long>(d.vertex_address[0]), d.vertex_stride[0], d.base_vertex,
+                            d.vertex_buffers);
+            }
+            ++resources.read[VertexStride];
+            resources.found[VertexStride] += stride;
+            if (d.placed == d.vertex_buffers) {
+                ++resources.read[VertexAddress];
+                resources.found[VertexAddress] += address;
+            }
+        }
+    }
+}
+
 void Report(u64 now) {
     std::printf("Render boundary: method calls");
     for (u32 m = 0; m < Methods; ++m) {
@@ -356,6 +538,12 @@ void Report(u64 now) {
                     static_cast<unsigned long long>(tally.shader_compared[s] - tally.shader_differ[s]),
                     static_cast<unsigned long long>(tally.shader_compared[s]));
     }
+    std::printf("\nRender boundary: resources: draws prepared %llu, not %llu; found/read:",
+                static_cast<unsigned long long>(resources.prepared), static_cast<unsigned long long>(resources.unprepared));
+    for (int k = 0; k < Resources; ++k) {
+        std::printf(" %s %llu/%llu", resource_names[k], static_cast<unsigned long long>(resources.found[k]),
+                    static_cast<unsigned long long>(resources.read[k]));
+    }
     std::printf("\n");
     std::fflush(stdout);
     last_report = now;
@@ -371,7 +559,8 @@ void NoteTag(const void* nop) {
     tag_next = static_cast<const u32*>(nop) + 3;
 }
 
-void ObserveDraw(const void* packet, const AmdGpu::Regs& regs, bool indexed, u32 index_offset, bool indirect) {
+void ObserveDraw(const void* packet, const AmdGpu::Regs& regs, bool indexed, u32 index_offset, bool indirect,
+                 const Vulkan::PreparedDraw* prepared, u64 reg_checksum) {
     Record d;
     if (packet != tag_next || !Find(tag_number, d)) {
         ++tally.compared[Missing];
@@ -396,6 +585,7 @@ void ObserveDraw(const void* packet, const AmdGpu::Regs& regs, bool indexed, u32
             Compare(IndexStartField, d.index_start == start, "index start", d.index_start, start);
         }
         CompareOutputs(d, regs);
+        CompareResources(d, regs, prepared, reg_checksum);
         // Where each of the draw state's stages runs on GCN (annotations: CgStage).
         const auto& stages = regs.stage_enable;
         const bool tessellated = stages.hs_en, geometry = stages.gs_en;

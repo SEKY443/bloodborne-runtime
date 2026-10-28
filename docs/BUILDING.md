@@ -173,8 +173,10 @@ Off by default; their output stays in the ignored `out/` (it holds game addresse
 - `BB_RENDER_BOUNDARY=observe` (`gpu/shim/bbport_render_boundary.cpp`; not with
   `BB_DRAW_CENSUS=1`): tags each draw made through the engine's draw methods with a NOP naming a
   record of its draw state, and the packet reader compares the record with the registers it
-  decoded. Every 5 seconds: the methods' calls, the tagged draws, the draw packets with and without
-  a record, and per field how many agree; the first eight differences are printed. Nothing is
+  decoded, and the record's resources with what the draw-preparation workers found the shaders
+  read. Every 5 seconds: the methods' calls, the tagged draws, the draw packets with and without a
+  record, per field how many agree, and per kind of resource how many were found; the first three
+  differences of each field are printed. It costs frame rate. Nothing is
   drawn differently ([Native renderer](NATIVE_RENDERER.md#n6-the-engines-render-boundary)).
 - `BB_METAL_CAPS=compare`: the Metal backend's capability answers against MoltenVK's (above).
 - `BB_DEBUG_MOTION=1`: blends the camera-motion vectors over the frame.

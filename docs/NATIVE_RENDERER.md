@@ -30,14 +30,14 @@ steps.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 62% `████████████░░░░░░░░` | N0, N1 and N4 done; N5 the default, waiting for acceptance; N6 under way |
+| **R5 · native renderer** | 64% `████████████░░░░░░░░` | N0, N1 and N4 done; N5 the default, waiting for acceptance; N6 under way |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
 | N2 · shaders ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: an inventory of the shader variants the game uses |
 | N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 95% `███████████████████░` | M1–M4 implemented; native Metal the default since 0.9.0 RC 1. Next: acceptance (below) |
-| N6 · engine render boundary | 43% `████████░░░░░░░░░░░░` | 3 of 7 steps: the plan, the draws and their output state observed ([below](#n6-the-engines-render-boundary)). Next: N6.4, the resources observed |
+| N6 · engine render boundary | 57% `███████████░░░░░░░░░` | 4 of 7 steps: the plan; the draws, their output state and their resources observed ([below](#n6-the-engines-render-boundary)). Next: N6.5, mesh draws recorded from the draw state |
 
 ## Now and next
 
@@ -139,8 +139,8 @@ with the draw state's layout in `annotations/structs.h`.
 | N6.1 · the plan | 100% `████████████████████` | This section |
 | N6.2 · draws observed | 100% `████████████████████` | Every draw through the methods matched to its packets; topology, counts, index buffer and shaders agree |
 | N6.3 · output state observed | 100% `████████████████████` | Render and depth targets, blend, depth-stencil, rasterizer, viewport, scissor, stencil reference, blend colour and depth bounds agree |
-| N6.4 · resources observed | 0% `░░░░░░░░░░░░░░░░░░░░` | Next: each stage's textures, samplers and constant buffers, and the vertex buffers, against what the shaders read |
-| N6.5 · mesh draws from the draw state | 0% `░░░░░░░░░░░░░░░░░░░░` | `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls) recorded from their records; measured against the packet path |
+| N6.4 · resources observed | 100% `████████████████████` | The textures, samplers, constant buffers and vertex buffers the shaders read are the draw state's |
+| N6.5 · mesh draws from the draw state | 0% `░░░░░░░░░░░░░░░░░░░░` | Next: `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls) recorded from their records, with the buffer manager's addresses; measured against the packet path |
 | N6.6 · the other draw methods | 0% `░░░░░░░░░░░░░░░░░░░░` | The deferred lighting's quads and the upload ring's geometry |
 | N6.7 · the smaller boundaries | 0% `░░░░░░░░░░░░░░░░░░░░` | Compute passes, render-target passes (including the methods' own fast-clear resolves) and Scaleform: each its own boundary, or left to the packet path |
 
@@ -173,12 +173,16 @@ with the draw state's layout in `annotations/structs.h`.
 - **Bindings.** Each stage's samplers (S#), textures (T#) and constant buffers (V#s made from
   address and size) are the resources the engine's binder copies into its descriptor tables.
   Which binding slot each lands in is given by the shader's resource table, as the packet path
-  finds it today; N6.4 checks that the draw state's resources are the ones the shader reads.
+  finds it today.
 - **Vertex and index buffers.** 32 vertex buffers with strides and offsets; the index buffer with
-  its DXGI format and byte offset. Buffers the context's buffer manager places (`managed`) take
-  their address from the manager.
+  its DXGI format and byte offset. The shader reads one V# per vertex attribute: the buffer's
+  address plus the attribute's offset in a vertex, with the buffer's stride.
+- **Buffer addresses.** Constant buffers, and the vertex buffers marked `managed`, are placed by the
+  context's buffer manager, which looks their GPU addresses up in a table of its own (bloodborne-
+  recomp's `annotations/structs.h`, `CgConstantBuffer`). Recording a draw from the draw state
+  needs those addresses: the hook will ask the engine's own lookup on the game's thread.
 
-### What the observer found (N6.2, N6.3)
+### What the observer found (N6.2 to N6.4)
 
 `BB_RENDER_BOUNDARY=observe` (not with `BB_DRAW_CENSUS=1`) compares each tagged draw with the
 registers the packet reader decoded, every 5 seconds in the log. In a two-minute run (M3 Pro,
@@ -193,6 +197,13 @@ the test save, translator, no faults):
   reference, blend colour and depth bounds. The draw state's scissor applies only when its
   rasterizer block enables the viewport scissor (`scan_mode[1]`, 738,110 draws); then it agrees
   too. So for these draws the draw state alone says what the packets say.
+- The resources (2,839,214 draws whose resources the draw-preparation workers had read in time,
+  91%): every texture the shaders read is in the draw state's tables with the same T#
+  (16,422,346); samplers 99.98% (9,392,182 of 9,394,165; the rest are most likely empty slots the
+  binder fills with the engine's default sampler, not checked yet); every constant buffer matches
+  one of the stage's by size (23,447,710); every vertex buffer by stride (12,134,315), and by
+  address where the draw state places the buffers itself (11,721,677). The one buffer more per
+  draw is shadPS4's null buffer, not the game's.
 - Observing costs frame rate: 34.2–34.9 FPS with every comparison, 37.4–37.6 with the first
   ones, 36.2–37.0 without it that day. It is a diagnostic only.
 

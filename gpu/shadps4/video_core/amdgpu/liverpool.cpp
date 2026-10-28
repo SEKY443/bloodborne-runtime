@@ -1713,11 +1713,11 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 if (!rasterizer) {
                     break;
                 }
-                if (BbRenderBoundary::Observing()) {
-                    BbRenderBoundary::ObserveDraw(header, regs, true, 0, false);
-                }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 const auto* prepared = draw_prep ? draw_prep->NextDraw() : nullptr;
+                if (BbRenderBoundary::Observing()) {
+                    BbRenderBoundary::ObserveDraw(header, regs, true, 0, false, prepared, gfx_reg_checksum);
+                }
                 if (PredicationSkips(header)) {
                     break;
                 }
@@ -1734,11 +1734,12 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 if (!rasterizer) {
                     break;
                 }
-                if (BbRenderBoundary::Observing()) {
-                    BbRenderBoundary::ObserveDraw(header, regs, true, draw_index_off->index_offset, false);
-                }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 const auto* prepared = draw_prep ? draw_prep->NextDraw() : nullptr;
+                if (BbRenderBoundary::Observing()) {
+                    BbRenderBoundary::ObserveDraw(header, regs, true, draw_index_off->index_offset,
+                                                  false, prepared, gfx_reg_checksum);
+                }
                 if (PredicationSkips(header)) {
                     break;
                 }
@@ -1755,11 +1756,11 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 if (!rasterizer) {
                     break;
                 }
-                if (BbRenderBoundary::Observing()) {
-                    BbRenderBoundary::ObserveDraw(header, regs, false, 0, false);
-                }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 const auto* prepared = draw_prep ? draw_prep->NextDraw() : nullptr;
+                if (BbRenderBoundary::Observing()) {
+                    BbRenderBoundary::ObserveDraw(header, regs, false, 0, false, prepared, gfx_reg_checksum);
+                }
                 if (PredicationSkips(header)) {
                     break;
                 }
@@ -1781,7 +1782,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     break;
                 }
                 if (BbRenderBoundary::Observing()) {
-                    BbRenderBoundary::ObserveDraw(header, regs, false, 0, true);
+                    BbRenderBoundary::ObserveDraw(header, regs, false, 0, true, nullptr, 0);
                 }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 rasterizer->ScopeMarker(
@@ -1830,7 +1831,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     break;
                 }
                 if (BbRenderBoundary::Observing()) {
-                    BbRenderBoundary::ObserveDraw(header, regs, true, 0, true);
+                    BbRenderBoundary::ObserveDraw(header, regs, true, 0, true, nullptr, 0);
                 }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 rasterizer->ScopeMarker(
