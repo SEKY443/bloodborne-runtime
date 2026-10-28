@@ -170,6 +170,12 @@ Off by default; their output stays in the ignored `out/` (it holds game addresse
   callers of the boundary's methods, the material classes the mesh draw uses, the materials'
   parameter objects, and how often the engine's and the middleware's locks are taken. It informs
   the renderer's step N6 ([Native renderer](NATIVE_RENDERER.md)).
+- `BB_RENDER_BOUNDARY=observe` (`gpu/shim/bbport_render_boundary.cpp`; not with
+  `BB_DRAW_CENSUS=1`): tags each draw made through the engine's draw methods with a NOP naming a
+  record of its draw state, and the packet reader compares the record with the registers it
+  decoded. Every 5 seconds: the methods' calls, the tagged draws, the draw packets with and without
+  a record, and per field how many agree; the first eight differences are printed. Nothing is
+  drawn differently ([Native renderer](NATIVE_RENDERER.md#n6-the-engines-render-boundary)).
 - `BB_METAL_CAPS=compare`: the Metal backend's capability answers against MoltenVK's (above).
 - `BB_DEBUG_MOTION=1`: blends the camera-motion vectors over the frame.
 - `BB_FRAME_STATS=1`: frame statistics in the log; `BB_CB_PROBE=1`: two threads using one

@@ -30,14 +30,14 @@ steps.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 56% `███████████░░░░░░░░░` | N0, N1 and N4 done; N5 the default, waiting for acceptance; N6 next |
+| **R5 · native renderer** | 61% `████████████░░░░░░░░` | N0, N1 and N4 done; N5 the default, waiting for acceptance; N6 under way |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
 | N2 · shaders ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: an inventory of the shader variants the game uses |
 | N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 95% `███████████████████░` | M1–M4 implemented; native Metal the default since 0.9.0 RC 1. Next: acceptance (below) |
-| N6 · engine render boundary | 0% `░░░░░░░░░░░░░░░░░░░░` | Next. First action: the written plan in this document (below) |
+| N6 · engine render boundary | 33% `██████░░░░░░░░░░░░░░` | 2 of 6 steps: the plan and the draws observed ([below](#n6-the-engines-render-boundary)). Next: N6.3, resources and outputs observed |
 
 ## Now and next
 
@@ -52,22 +52,10 @@ In this order (the app's roadmap):
 
    Until then the app bundles MoltenVK and the Vulkan loader for the fallback only. After
    acceptance: decide whether the fallback leaves the macOS app.
-2. **N6, the engine's render boundary (next).** The native renderer takes the engine's draws at
-   CoreGraphics2's seven draw methods, with their draw state, instead of decoding the PS4 command
-   buffers the game writes. R4 (bloodborne-recomp, done) named and described what it needs:
-   [the annotations](https://github.com/bloodborne-native/bloodborne-recomp/blob/main/docs/RECOMPILATION.md#annotations)
-   and `annotations/structs.h`. The first steps:
-   1. Write the plan here: how a draw's state maps onto the adapter (the input-assembly, output
-      merger and rasterizer blocks onto the pipeline description and `DrawState`; each stage's
-      samplers, textures and constant buffers onto binding slots; the vertex buffers onto the
-      vertex input); what keeps the packet path (render-target passes, compute passes,
-      Scaleform: the other 15% of the draws) and how both paths stay ordered in one frame; and
-      how the hook is reached from the recompiled library as well as from the translator.
-   2. A first hook that only observes: the seven methods' draws counted and their state read,
-      compared with what the packet reader decodes for the same draws, with nothing drawn
-      differently.
-   3. Then draws taken over one kind at a time, starting with the mesh draw (65% of the seven
-      methods' calls), each measured against the packet path.
+2. **N6, the engine's render boundary (under way).** The native renderer takes the engine's
+   draws at CoreGraphics2's draw methods, with their draw state, instead of decoding the PS4
+   command buffers the game writes. The plan, its steps and what the observer found:
+   [below](#n6-the-engines-render-boundary).
 3. **The recompiler's CPU work** (bloodborne-recomp).
 4. **N2 and N3.** Shaders are still recompiled from GCN and converted to MSL while the game runs
    (the Metal backend caches built pipelines between sessions); textures are still inferred from
@@ -137,6 +125,70 @@ batch's depth bounds); the 7.5% draws geometry written into an upload ring.
 rasterizer, blend and depth-stencil states, eight colour targets and a depth target, and five
 graphics stages, each with 16 samplers, 128 textures and 14 constant buffers. Its known layout is
 in bloodborne-recomp's `annotations/structs.h`.
+
+## N6: the engine's render boundary
+
+R4 (bloodborne-recomp) named the boundary and described its objects:
+[the annotations](https://github.com/bloodborne-native/bloodborne-recomp/blob/main/docs/RECOMPILATION.md#annotations),
+with the draw state's layout in `annotations/structs.h`.
+
+### Steps
+
+| Step | Progress | State |
+|---|---|---|
+| N6.1 · the plan | 100% `████████████████████` | This section |
+| N6.2 · draws observed | 100% `████████████████████` | Every draw through the methods matched to its packets; topology, counts, index buffer and shaders compared |
+| N6.3 · resources and outputs observed | 0% `░░░░░░░░░░░░░░░░░░░░` | Next: textures, samplers, constant buffers, vertex buffers, render and depth targets, blend, depth-stencil, rasterizer, viewports and scissors compared the same way |
+| N6.4 · mesh draws from the draw state | 0% `░░░░░░░░░░░░░░░░░░░░` | `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls) recorded from their records; measured against the packet path |
+| N6.5 · the other draw methods | 0% `░░░░░░░░░░░░░░░░░░░░` | Then the deferred lighting's rect lists (below) and the upload ring's geometry |
+| N6.6 · the smaller boundaries | 0% `░░░░░░░░░░░░░░░░░░░░` | Compute passes, render-target passes and Scaleform: each its own boundary, or left to the packet path |
+
+### How a draw reaches the renderer
+
+- **Tags in the stream.** An entry hook on each draw method reads the draw state it is given into
+  a record (`gpu/shim/bbport_render_boundary.cpp`). A hook on libGnm's draw functions files the
+  record under a number and writes a three-dword PM4 NOP with that number just before the draw's
+  packet. The GPU ignores the NOP; the engine copies its recorded commands into the buffers it
+  submits, and the tag travels with them. The packet reader, meeting the tag and then the draw,
+  knows which record the draw is.
+- **One stream, one order.** A draw taken over is still recorded where its packet stands in the
+  stream: the reader hands the record to the native renderer at the tag instead of decoding the
+  registers. Waits, labels, flips, compute passes and every draw not taken over keep the packet
+  path in the same stream, so nothing needs reordering or extra synchronization.
+- **Translator and recompiled library.** The hooks rewrite the methods' first instructions, so
+  those 11 functions fail the recompiled library's byte check and run translated; everything they
+  call stays recompiled. The cost is measured with each step.
+
+### How the draw state maps onto the adapter
+
+- **Pipeline.** The five stages' shaders (each `CgShader`'s code address) are still GCN code,
+  recompiled and converted as today (N2 changes that); the input layout and the vertex strides
+  give the vertex input; topology, the rasterizer, blend and depth-stencil blocks and the render
+  and depth targets' formats give the rest of the pipeline description.
+- **Draw state.** Viewports, scissors, the blend colour, depth bounds and the stencil reference
+  map onto the adapter's `DrawState`.
+- **Bindings.** Each stage's samplers (S#), textures (T#) and constant buffers (V#s made from
+  address and size) are the resources the engine's binder copies into its descriptor tables.
+  Which binding slot each lands in is given by the shader's resource table, as the packet path
+  finds it today; N6.3 checks that the draw state's resources are the ones the shader reads.
+- **Vertex and index buffers.** 32 vertex buffers with strides and offsets; the index buffer with
+  its DXGI format and byte offset. Buffers the context's buffer manager places (`managed`) take
+  their address from the manager.
+
+### What the observer found (N6.2)
+
+`BB_RENDER_BOUNDARY=observe` (not with `BB_DRAW_CENSUS=1`) compares each tagged draw with the
+registers the packet reader decoded, every 5 seconds in the log. In a two-minute run (M3 Pro,
+the test save, translator, 37.6 FPS against 36.2–37.0 in untagged runs that day, no faults):
+
+- 2,986,163 draws went through the methods; 2,985,011 (99.96%) reached the reader with their tag.
+  The 310,001 draw packets without one are the 310,026 libGnm draws made outside the methods.
+- Agreeing: index type, index start and instance counts (100% of 1.94, 1.93 and 0.10 million);
+  the hull, domain and geometry shaders (100% of 212,527, 212,527 and 5,883); topology, counts
+  and the vertex and pixel shaders in 99.73%.
+- The 0.27% that differ are one pattern: a draw state with a four-vertex triangle strip that the
+  engine draws as a three-vertex rect list with shaders of its own (full-screen and screen-aligned
+  quads). Taking those over means drawing the rect list, not the draw state's strip.
 
 ## The Metal backend today (N5)
 
