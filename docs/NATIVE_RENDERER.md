@@ -30,14 +30,14 @@ steps.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 66% `█████████████░░░░░░░` | N0, N1 and N4 done; N5 the default, waiting for acceptance; N6 under way |
+| **R5 · native renderer** | 73% `██████████████░░░░░░` | N0, N1, N4 and N6 done; N5 the default, waiting for acceptance; N2 under way |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
-| N2 · shaders ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: an inventory of the shader variants the game uses |
-| N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: trace where the engine creates and releases textures |
+| N2 · shaders from the draw state, then ahead of time | 20% `████░░░░░░░░░░░░░░░░` | 1 of 5 steps: the plan ([below](#n2-shaders-from-the-draw-state-then-ahead-of-time)). Next: N2.2, the inventory of the shaders and how each reads its resources |
+| N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N2. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 95% `███████████████████░` | M1–M4 implemented; native Metal the default since 0.9.0 RC 1. Next: acceptance (below) |
-| N6 · engine render boundary | 67% `█████████████░░░░░░░` | 4 of 7 steps, and three quarters of N6.5: mesh draws bind their resources from the draw state (`BB_RENDER_BOUNDARY=mesh`) ([below](#n6-the-engines-render-boundary)). Next: the user-data walk skipped for them, measured |
+| N6 · engine render boundary | 100% `████████████████████` | Done (re-scoped on 2026-10-28): the boundary found and observed, every input of a draw found from the draw state, mesh draws bound from it ([below](#n6-the-engines-render-boundary)); taking the other draw kinds over moved to N2 |
 
 ## Now and next
 
@@ -52,14 +52,13 @@ In this order (the app's roadmap):
 
    Until then the app bundles MoltenVK and the Vulkan loader for the fallback only. After
    acceptance: decide whether the fallback leaves the macOS app.
-2. **N6, the engine's render boundary (under way).** The native renderer takes the engine's
-   draws at CoreGraphics2's draw methods, with their draw state, instead of decoding the PS4
-   command buffers the game writes. The plan, its steps and what the observer found:
-   [below](#n6-the-engines-render-boundary).
+2. **N2, shaders from the draw state, then ahead of time (under way).** N6 found that each
+   resource a shader reads comes from a fixed slot of the engine's draw state. While shaders are
+   converted GCN code they read the PS4 user data themselves, so nothing is saved until they are
+   built to read the draw state's slots instead: N2 does that, mesh draws first, then converts
+   them once ahead of time. Its steps: [below](#n2-shaders-from-the-draw-state-then-ahead-of-time).
 3. **The recompiler's CPU work** (bloodborne-recomp).
-4. **N2 and N3.** Shaders are still recompiled from GCN and converted to MSL while the game runs
-   (the Metal backend caches built pipelines between sessions); textures are still inferred from
-   GPU memory by shadPS4's texture cache.
+4. **N3.** Textures are still inferred from GPU memory by shadPS4's texture cache.
 
 ## What was measured
 
@@ -140,9 +139,15 @@ with the draw state's layout in `annotations/structs.h`.
 | N6.2 · draws observed | 100% `████████████████████` | Every draw through the methods matched to its packets; topology, counts, index buffer and shaders agree |
 | N6.3 · output state observed | 100% `████████████████████` | Render and depth targets, blend, depth-stencil, rasterizer, viewport, scissor, stencil reference, blend colour and depth bounds agree |
 | N6.4 · resources observed | 100% `████████████████████` | The textures, samplers, constant buffers and vertex buffers the shaders read are the draw state's |
-| N6.5 · mesh draws from the draw state | 75% `███████████████░░░░░` | `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls) recorded from their records, in four parts: the buffers' addresses from the engine's managers (done); each shader resource's slot in the draw state (done); their resources bound from the record behind `BB_RENDER_BOUNDARY=mesh` (done); the draw-preparation workers' user-data walk skipped for them, and measured against the packet path (next) |
-| N6.6 · the other draw methods | 0% `░░░░░░░░░░░░░░░░░░░░` | The deferred lighting's quads and the upload ring's geometry |
-| N6.7 · the smaller boundaries | 0% `░░░░░░░░░░░░░░░░░░░░` | Compute passes, render-target passes (including the methods' own fast-clear resolves) and Scaleform: each its own boundary, or left to the packet path |
+| N6.5 · mesh draws from the draw state | 100% `████████████████████` | `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls): the buffers' addresses from the engine's managers; each shader resource's slot in the draw state; their resources bound from the record behind `BB_RENDER_BOUNDARY=mesh` |
+
+N6 was re-scoped on 2026-10-28 (maintainer). Its last steps were to skip the draw-preparation
+workers' user-data walk for mesh draws and then take the other draw kinds over the same way. But
+converted GCN shaders read the user data themselves (the renderer uploads it with the flattened
+user data for every draw), so taking draws over saves nothing while the shaders are GCN code. The
+other draw kinds (the deferred lighting's quads, the upload ring's geometry; compute passes,
+render-target passes including the methods' own fast-clear resolves, and Scaleform) move to N2,
+which builds their shaders to read the draw state instead.
 
 ### How a draw reaches the renderer
 
@@ -226,6 +231,29 @@ the test save, translator, no faults):
   workers still walk the user data and the hooks add their own cost.
 - Observing costs frame rate: 34.2–34.9 FPS with every comparison, 37.4–37.6 with the first
   ones, 36.2–37.0 without it that day. It is a diagnostic only.
+
+## N2: shaders from the draw state, then ahead of time
+
+### Steps
+
+| Step | Progress | State |
+|---|---|---|
+| N2.1 · the plan | 100% `████████████████████` | This section |
+| N2.2 · the inventory | 0% `░░░░░░░░░░░░░░░░░░░░` | Next: the shader programs the game uses, and how each reads its resources (from user data registers, through tables in memory, as inline constants) |
+| N2.3 · mesh shaders from the draw state | 0% `░░░░░░░░░░░░░░░░░░░░` | Mesh draws' shaders built with fixed bindings for their draw-state slots (N6's slot maps), so neither the user-data walk nor its upload is needed for them; measured against today's path |
+| N2.4 · the other draw kinds | 0% `░░░░░░░░░░░░░░░░░░░░` | The other draw methods' draws, then the compute passes, render-target passes and Scaleform: each from its own boundary, or left to the packet path |
+| N2.5 · ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | The shaders converted once on the player's machine, keyed by the game's shader code, so none is compiled during play |
+
+### What N2 builds on
+
+- N6's record of each draw: the five stages' shaders (code addresses), the draw state's
+  textures, samplers, constant buffers and vertex buffers with their addresses, and the output
+  state.
+- N6's slot maps: per shader program which draw-state slot each resource it reads comes from, per
+  vertex program and input layout which slot and offset each vertex attribute reads.
+- Today's shader path: GCN code recompiled by the shader recompiler, its resources found by
+  walking the user data, converted to SPIR-V and on the Metal backend to MSL; built pipelines are
+  cached between sessions.
 
 ## The Metal backend today (N5)
 
