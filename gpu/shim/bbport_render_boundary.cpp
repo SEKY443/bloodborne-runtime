@@ -9,6 +9,7 @@
 // draw; the GPU ignores it. The packet reader runs later on the GPU thread: a tagged NOP followed
 // at once by a draw packet names that draw's record.
 #include "bbport_render_boundary.h"
+#include "bbport_guest_call.h"
 #include "bbport_guest_code_hooks.h"
 
 #include "video_core/amdgpu/regs.h"
@@ -51,7 +52,14 @@ constexpr u64 Topology = 0x8, IndexBuffer = 0x10, IndexFormat = 0x18, IndexOffse
               RenderTargets = 0x4e0, DepthTarget = 0x520, BlendColor = 0x568, DepthBounds = 0x578,
               StencilReference = 0x584, ScissorEnable = 0x15, VertexBuffers = 0x20, VertexStrides = 0x120,
               VertexOffsets = 0x1a0, StageSamplers = 0x0, StageTextures = 0x80, StageTextureSlots = 128,
-              StageConstantBuffers = 0x480, TextureSharp = 0x10, ConstantBufferSize = 0x2c;
+              StageConstantBuffers = 0x480, TextureSharp = 0x10, ConstantBufferSize = 0x2c,
+              ConstantBufferHandle = 0x18;
+// The context's buffer manager, and its lookup of a buffer's GPU address from the buffer's handle
+// (what CG::ResourceBinder::commitGraphics calls before initAsConstantBuffer).
+constexpr u64 ContextBufferManager = 0xb3c0, BufferManagerAddressOf = 0x26ae840;
+// Index and vertex buffers marked managed: another table of the context's, the same handle offset
+// (CG::InputAssemblyState::apply).
+constexpr u64 ContextGeometryManager = 0xb6f8, GeometryManagerAddressOf = 0x26d0ff0, BufferHandle = 0x18;
 // A render or depth target object holds libGnm's RenderTarget or DepthRenderTarget at +0x10
 // (CG::OutputMergerState::apply passes that to setRenderTarget and setDepthRenderTarget); their
 // CB_COLOR_BASE is the first register, DB_Z_READ_BASE the third (the address shifted by 8).
@@ -83,6 +91,7 @@ struct Record {
     struct Resources {
         u64 textures[16], texture_addresses[16], samplers[4];
         u32 constant_buffer_size[14];
+        u64 constant_buffer_address[14]; // from the buffer manager, at libGnm's draw; 0: none
         u8 constant_buffers;
     } stage[StageCount];
     u8 vertex_buffers, placed;
@@ -93,6 +102,11 @@ struct Record {
 struct Pending {
     bool valid;
     Record record;
+    u64 context;
+    u64 constant_buffer[StageCount][14]; // the CgConstantBuffer objects, by the record's order
+    u64 managed_index;                   // the managed index buffer's CgBuffer, and its offset
+    u64 managed_index_offset;
+    u64 managed_vertex[32];              // the managed vertex buffers' CgBuffers, by the record's order
 };
 thread_local Pending pending;
 
@@ -195,6 +209,7 @@ void ReadResources(u64 state, Record& d) {
         }
         for (u32 i = 0; i < 14; ++i) {
             if (const u64 buffer = Read<u64>(stage + StageConstantBuffers + 8 * i)) {
+                pending.constant_buffer[s][r.constant_buffers] = buffer;
                 r.constant_buffer_size[r.constant_buffers++] = Read<u32>(buffer + ConstantBufferSize);
             }
         }
@@ -204,10 +219,13 @@ void ReadResources(u64 state, Record& d) {
         if (const u64 buffer = Read<u64>(state + VertexBuffers + 8 * i)) {
             const u32 n = d.vertex_buffers++;
             d.vertex_stride[n] = Read<u32>(state + VertexStrides + 4 * i);
-            d.vertex_address[n] = 0;
+            d.vertex_address[n] = Read<u32>(state + VertexOffsets + 4 * i);
+            pending.managed_vertex[n] = 0;
             if (!Read<u8>(buffer + BufferManaged)) {
-                d.vertex_address[n] = Read<u64>(buffer + BufferAddress) + Read<u32>(state + VertexOffsets + 4 * i);
+                d.vertex_address[n] += Read<u64>(buffer + BufferAddress);
                 ++d.placed;
+            } else {
+                pending.managed_vertex[n] = buffer; // the offset now, the address at libGnm's draw
             }
         }
     }
@@ -218,6 +236,7 @@ void __attribute__((sysv_abi)) OnMethod(u64 tag, const Core::GuestRegisterSnapsh
     Record& d = pending.record;
     d = {};
     d.method = u32(tag);
+    pending.context = r->rdi;
     const u64 state = r->rsi;
     const u32 a = u32(r->rdx), b = u32(r->rcx), c = u32(r->r8);
     u32 first_index = 0;
@@ -232,9 +251,13 @@ void __attribute__((sysv_abi)) OnMethod(u64 tag, const Core::GuestRegisterSnapsh
     d.index_format = Read<u32>(state + IndexFormat);
     if (tag == DrawIndexed || tag == DrawIndexedInstanced) {
         const u64 buffer = Read<u64>(state + IndexBuffer);
+        const u64 size = d.index_format == 0x2a ? 4 : 2;
+        pending.managed_index = 0;
         if (buffer && !Read<u8>(buffer + BufferManaged)) {
-            const u64 size = d.index_format == 0x2a ? 4 : 2;
             d.index_start = Read<u64>(buffer + BufferAddress) + Read<u32>(state + IndexOffset) + first_index * size;
+        } else if (buffer) {
+            pending.managed_index = buffer; // its address is asked for at libGnm's draw
+            pending.managed_index_offset = Read<u32>(state + IndexOffset) + first_index * size;
         }
     }
     for (int s = 0; s < StageCount; ++s) {
@@ -293,6 +316,28 @@ void __attribute__((sysv_abi)) OnGnmDraw(u64, const Core::GuestRegisterSnapshot*
         no_room.fetch_add(1, std::memory_order_relaxed); // the draw refills the buffer itself
         return;
     }
+    // The binder has run: the buffer manager knows this draw's constant buffers.
+    const u64 manager = pending.context + ContextBufferManager;
+    for (int s = 0; s < StageCount; ++s) {
+        auto& resources = pending.record.stage[s];
+        for (u32 i = 0; i < resources.constant_buffers; ++i) {
+            resources.constant_buffer_address[i] = BbGuest::Call<u64>(
+                image_base + BufferManagerAddressOf, manager, pending.constant_buffer[s][i] + ConstantBufferHandle);
+        }
+    }
+    const u64 geometry = pending.context + ContextGeometryManager;
+    if (pending.managed_index) {
+        pending.record.index_start =
+            BbGuest::Call<u64>(image_base + GeometryManagerAddressOf, geometry, pending.managed_index + BufferHandle) +
+            pending.managed_index_offset;
+    }
+    for (u32 n = 0; n < pending.record.vertex_buffers; ++n) {
+        if (pending.managed_vertex[n]) {
+            pending.record.vertex_address[n] +=
+                BbGuest::Call<u64>(image_base + GeometryManagerAddressOf, geometry, pending.managed_vertex[n] + BufferHandle);
+        }
+    }
+    pending.record.placed = pending.record.vertex_buffers; // every address is known now
     const u64 number = next_number.fetch_add(1, std::memory_order_relaxed);
     pending.record.key = number;
     File(pending.record);
@@ -423,12 +468,13 @@ void CompareOutputs(const Record& d, const AmdGpu::Regs& regs) {
 
 // What the shaders read (the draw-preparation worker's sharps) against the draw state's resources.
 enum Resource {
-    Texture, TextureByAddress, Sampler, ConstantBuffer, OtherBuffer, VertexStride, VertexAddress, Resources
+    Texture, TextureByAddress, Sampler, ConstantBuffer, ConstantBufferAddress, OtherBuffer, VertexStride,
+    VertexAddress, Resources
 };
 constexpr const char* resource_names[Resources] = {
     "textures", "textures by address only", "samplers", "constant buffers (stride 16) by size",
-    "other buffers (by a constant buffer's size)", "vertex buffers by stride",
-    "vertex buffers of draws whose buffers the draw state places, by address"};
+    "constant buffers by the buffer manager's address", "other buffers (by a constant buffer's size)",
+    "vertex buffers by stride", "vertex buffers by address"};
 struct ResourceTally {
     u64 read[Resources], found[Resources], unprepared, prepared;
 } resources;
@@ -480,13 +526,24 @@ void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::P
             if (sharp.base_address == 1 && sharp.num_records == 0) {
                 continue; // shadPS4's null buffer, not a resource of the game's
             }
-            bool found = false;
+            bool found = false, at_address = false;
             for (u32 j = 0; j < r.constant_buffers; ++j) {
                 found = found || (sharp.stride == 16 && (r.constant_buffer_size[j] + 15) / 16 == sharp.num_records);
+                at_address = at_address || r.constant_buffer_address[j] == sharp.base_address;
             }
             const Resource kind = sharp.stride == 16 ? ConstantBuffer : OtherBuffer;
             ++resources.read[kind];
             resources.found[kind] += found;
+            if (kind == ConstantBuffer) {
+                ++resources.read[ConstantBufferAddress];
+                resources.found[ConstantBufferAddress] += at_address;
+                if (!at_address && examples_printed[Fields - 2] < 4) {
+                    ++examples_printed[Fields - 2];
+                    std::printf("Render boundary: constant buffer V# %#llx; the manager's first %#llx of %u\n",
+                                static_cast<unsigned long long>(sharp.base_address),
+                                static_cast<unsigned long long>(r.constant_buffer_address[0]), r.constant_buffers);
+                }
+            }
         }
     }
     if (prepared->vertex.valid) {

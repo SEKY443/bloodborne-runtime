@@ -30,14 +30,14 @@ steps.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 64% `████████████░░░░░░░░` | N0, N1 and N4 done; N5 the default, waiting for acceptance; N6 under way |
+| **R5 · native renderer** | 65% `█████████████░░░░░░░` | N0, N1 and N4 done; N5 the default, waiting for acceptance; N6 under way |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
 | N2 · shaders ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: an inventory of the shader variants the game uses |
 | N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 95% `███████████████████░` | M1–M4 implemented; native Metal the default since 0.9.0 RC 1. Next: acceptance (below) |
-| N6 · engine render boundary | 57% `███████████░░░░░░░░░` | 4 of 7 steps: the plan; the draws, their output state and their resources observed ([below](#n6-the-engines-render-boundary)). Next: N6.5, mesh draws recorded from the draw state |
+| N6 · engine render boundary | 60% `████████████░░░░░░░░` | 4 of 7 steps, and N6.5 a quarter done: every input of a draw found from the draw state ([below](#n6-the-engines-render-boundary)). Next: each shader resource's slot in the draw state |
 
 ## Now and next
 
@@ -140,7 +140,7 @@ with the draw state's layout in `annotations/structs.h`.
 | N6.2 · draws observed | 100% `████████████████████` | Every draw through the methods matched to its packets; topology, counts, index buffer and shaders agree |
 | N6.3 · output state observed | 100% `████████████████████` | Render and depth targets, blend, depth-stencil, rasterizer, viewport, scissor, stencil reference, blend colour and depth bounds agree |
 | N6.4 · resources observed | 100% `████████████████████` | The textures, samplers, constant buffers and vertex buffers the shaders read are the draw state's |
-| N6.5 · mesh draws from the draw state | 0% `░░░░░░░░░░░░░░░░░░░░` | Next: `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls) recorded from their records, with the buffer manager's addresses; measured against the packet path |
+| N6.5 · mesh draws from the draw state | 25% `█████░░░░░░░░░░░░░░░` | `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls) recorded from their records, in four parts: the buffers' addresses from the engine's managers (done); each shader resource's slot in the draw state (next); the draw recorded from the record behind a switch; measured against the packet path |
 | N6.6 · the other draw methods | 0% `░░░░░░░░░░░░░░░░░░░░` | The deferred lighting's quads and the upload ring's geometry |
 | N6.7 · the smaller boundaries | 0% `░░░░░░░░░░░░░░░░░░░░` | Compute passes, render-target passes (including the methods' own fast-clear resolves) and Scaleform: each its own boundary, or left to the packet path |
 
@@ -177,10 +177,12 @@ with the draw state's layout in `annotations/structs.h`.
 - **Vertex and index buffers.** 32 vertex buffers with strides and offsets; the index buffer with
   its DXGI format and byte offset. The shader reads one V# per vertex attribute: the buffer's
   address plus the attribute's offset in a vertex, with the buffer's stride.
-- **Buffer addresses.** Constant buffers, and the vertex buffers marked `managed`, are placed by the
-  context's buffer manager, which looks their GPU addresses up in a table of its own (bloodborne-
-  recomp's `annotations/structs.h`, `CgConstantBuffer`). Recording a draw from the draw state
-  needs those addresses: the hook will ask the engine's own lookup on the game's thread.
+- **Buffer addresses.** Constant buffers, and the index and vertex buffers marked `managed`, are
+  placed by the context's managers, which look their GPU addresses up in tables of their own:
+  constant buffers through the manager at context + 0xb3c0 (`0x26ae840`), index and vertex
+  buffers through the one at context + 0xb6f8 (`0x26d0ff0`), each given the buffer's handle at
+  +0x18. The libGnm draw hook asks them (`runtime_guest_call` on the game's thread), after the
+  binder has run, so the addresses are this draw's.
 
 ### What the observer found (N6.2 to N6.4)
 
@@ -204,6 +206,10 @@ the test save, translator, no faults):
   one of the stage's by size (23,447,710); every vertex buffer by stride (12,134,315), and by
   address where the draw state places the buffers itself (11,721,677). The one buffer more per
   draw is shadPS4's null buffer, not the game's.
+- The buffer addresses (N6.5, 2,606,707 prepared draws, no faults): with the managers' answers
+  every constant buffer (21,497,235), every vertex buffer (11,121,153) and every indexed draw's
+  first index (1,856,692) is at the address the draw state gives. Asking the managers on every
+  draw costs the game's threads time (31.0 FPS in that run).
 - Observing costs frame rate: 34.2–34.9 FPS with every comparison, 37.4–37.6 with the first
   ones, 36.2–37.0 without it that day. It is a diagnostic only.
 
