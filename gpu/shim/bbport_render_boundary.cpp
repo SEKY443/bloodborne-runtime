@@ -16,8 +16,12 @@
 #include "video_core/amdgpu/regs.h"
 #include "video_core/amdgpu/resource.h"
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
+#include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 
+#include <array>
 #include <atomic>
+#include <memory>
+#include <mutex>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -125,6 +129,11 @@ struct Slot {
 Slot* slots = nullptr;
 bool observing = false;
 bool take_mesh_draws = false; // BB_RENDER_BOUNDARY=mesh
+/// N2.3: BB_RENDER_BOUNDARY=flat-check (the worker also fills the flattened user data of mesh
+/// draws from the draw state and compares the sharps it gives) or flat (the fill replaces the
+/// walker).
+enum FlatMode { FlatOff, FlatCheck, FlatFill };
+FlatMode flat_mode = FlatOff;
 u64 image_base = 0;
 std::atomic<u64> method_calls[Methods], filed{0}, gnm_without_method{0}, gnm_nested{0}, no_room{0}, next_number{1};
 
@@ -471,6 +480,11 @@ struct SlotMap {
     std::vector<std::bitset<32>> attributes;
     std::vector<s64> attribute_offsets; // the V#'s address less its slot's; INT64_MIN: not fixed
     bool started = false;
+    // N2.3: per constant buffer its V#'s dwords as the walker left them in the flattened user data
+    // (the draw state gives only the address and size), and the draws the map was learnt from.
+    std::vector<std::array<u32, 4>> buffer_raw;
+    std::vector<bool> buffer_raw_known;
+    u64 draws = 0;
 };
 struct PairHash {
     std::size_t operator()(const std::pair<const void*, u64>& key) const {
@@ -734,6 +748,25 @@ void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::P
             resources.found[Sampler] += candidates.any();
             Narrow(map.samplers, k, candidates, map.started);
         }
+        ++map.draws;
+        if (flat_mode != FlatOff && p.program && p.flat) {
+            const auto& buffers = p.program->info.buffers;
+            map.buffer_raw.resize(buffers.size());
+            map.buffer_raw_known.resize(buffers.size());
+            for (u32 k = 0; k < buffers.size() && k < p.num_buffers; ++k) {
+                if (map.buffer_raw_known[k]) {
+                    continue;
+                }
+                const auto& fetch = buffers[k].sharp_fetch;
+                bool ok = true;
+                for (u32 i = 0; i < 4; ++i) {
+                    const bool loaded = (fetch.load_mask >> i) & 1;
+                    ok = ok && (!loaded || fetch.offsets[i] < p.flat_size);
+                    map.buffer_raw[k][i] = loaded && ok ? p.flat[fetch.offsets[i]] : fetch.immediates[i];
+                }
+                map.buffer_raw_known[k] = ok;
+            }
+        }
         for (u32 k = 0; k < p.num_buffers; ++k) {
             const AmdGpu::Buffer& sharp = p.buffer_sharps[k];
             std::bitset<14> candidates;
@@ -808,7 +841,212 @@ void ReportSlotMaps() {
     std::printf("\n");
 }
 
+// ---- N2.3: the flattened user data of mesh draws from the draw state ----
+// A plan per shader program whose slot map is complete (each texture, sampler and constant buffer
+// with at least one candidate slot, the buffers' V# dwords known, or the null buffer), learnt over
+// at least PlanDraws draws; the GPU thread publishes them and the workers read a copy. A resource
+// with several candidates (slots that held the same sharp in every draw so far, the engine's
+// default samplers) is filled only while its candidates still agree: the right slot is always
+// among them, so then any gives its sharp.
+constexpr u64 PlanDraws = 256;
+struct Plan {
+    std::vector<std::bitset<StageTextureSlots>> images;
+    std::vector<std::bitset<16>> samplers;
+    std::vector<std::bitset<14>> buffers; // all bits: the null buffer
+    std::vector<std::array<u32, 4>> buffer_raw;
+};
+using Plans = std::unordered_map<const void*, Plan>;
+std::mutex plans_mutex;
+std::shared_ptr<const Plans> published_plans;
+std::atomic<u64> plans_generation{0};
+struct FlatTally {
+    std::atomic<u64> stages, filled, no_record, no_plan, failed, sharps, differed, gpu_filled, gpu_failed;
+} flat_tally;
+// The GPU thread's record of the draw it is drawing (ObserveDraw, flat mode).
+Record gpu_record;
+bool gpu_has_record = false;
+
+void PublishPlans() {
+    auto plans = std::make_shared<Plans>();
+    for (const auto& [key, map] : slot_maps) {
+        if (key.second != 0 || map.draws < PlanDraws) {
+            continue; // vertex attribute maps, or not learnt long enough
+        }
+        Plan plan;
+        bool complete = true;
+        for (const auto& bits : map.images) {
+            complete = complete && bits.any();
+        }
+        for (const auto& bits : map.samplers) {
+            complete = complete && bits.any();
+        }
+        for (u32 k = 0; k < map.buffers.size(); ++k) {
+            const auto& bits = map.buffers[k];
+            const bool known = k < map.buffer_raw_known.size() && map.buffer_raw_known[k];
+            complete = complete && (bits.all() || (bits.any() && known));
+            plan.buffer_raw.push_back(known ? map.buffer_raw[k] : std::array<u32, 4>{});
+        }
+        plan.images = map.images;
+        plan.samplers = map.samplers;
+        plan.buffers = map.buffers;
+        if (complete) {
+            plans->emplace(key.first, std::move(plan));
+        }
+    }
+    std::scoped_lock lock{plans_mutex};
+    published_plans = std::move(plans);
+    plans_generation.fetch_add(1, std::memory_order_release);
+}
+
+// The worker's view: the tag before the draw it prepares, that draw's record, its copy of the plans.
+thread_local u32 worker_tag_number = 0;
+thread_local const void* worker_tag_next = nullptr;
+thread_local bool worker_has_record = false;
+thread_local Record worker_record;
+thread_local std::shared_ptr<const Plans> worker_plans;
+thread_local u64 worker_plans_generation = 0;
+
+const Plan* WorkerPlan(const void* program) {
+    const u64 generation = plans_generation.load(std::memory_order_acquire);
+    if (generation != worker_plans_generation) {
+        std::scoped_lock lock{plans_mutex};
+        worker_plans = published_plans;
+        worker_plans_generation = generation;
+    }
+    if (!worker_plans) {
+        return nullptr;
+    }
+    const auto it = worker_plans->find(program);
+    return it == worker_plans->end() ? nullptr : &it->second;
+}
+
+// The dwords of a sharp the shader loads from the flattened user data, written where it loads them.
+template <typename T, std::size_t N>
+bool Place(const Shader::SharpFetch<T>& fetch, const std::array<u32, N>& dwords, std::vector<u32>& flat) {
+    for (u32 i = 0; i < N && i < Shader::SharpFetch<T>::N; ++i) {
+        if (!((fetch.load_mask >> i) & 1)) {
+            continue;
+        }
+        if (fetch.offsets[i] >= flat.size()) {
+            return false;
+        }
+        flat[fetch.offsets[i]] = dwords[i];
+    }
+    return true;
+}
+
+// The flattened user data of `info`'s stage from the draw state: the user-data registers, then
+// each resource's sharp at its offsets. False when a resource has no sharp there.
+// The sharp of a resource with candidate slots `bits`, if every candidate holds the same one
+// (`read` gives a slot's object address, or 0 for an empty slot).
+template <std::size_t Bits, std::size_t Dwords>
+bool AgreedSharp(const std::bitset<Bits>& bits, auto read, std::array<u32, Dwords>& out) {
+    bool found = false;
+    for (u32 slot = 0; slot < Bits; ++slot) {
+        if (!bits[slot]) {
+            continue;
+        }
+        const u64 address = read(slot);
+        if (!address) {
+            return false;
+        }
+        std::array<u32, Dwords> dwords;
+        std::memcpy(dwords.data(), reinterpret_cast<const void*>(address), sizeof(dwords));
+        if (!found) {
+            out = dwords;
+            found = true;
+        } else if (dwords != out) {
+            return false; // the candidates disagree now: the walker decides
+        }
+    }
+    return found;
+}
+
+bool FillFrom(const Plan& plan, const Record::Resources& r, const Shader::Info& info, std::vector<u32>& flat) {
+    if (plan.images.size() != info.images.size() || plan.samplers.size() != info.samplers.size() ||
+        plan.buffers.size() != info.buffers.size()) {
+        return false;
+    }
+    flat.assign(info.srt_info.flattened_bufsize_dw, 0);
+    if (flat.size() < info.user_data.size()) {
+        return false;
+    }
+    std::memcpy(flat.data(), info.user_data.data(), info.user_data.size_bytes());
+    for (u32 k = 0; k < info.images.size(); ++k) {
+        std::array<u32, 8> dwords;
+        const auto texture = [&](u32 slot) { return r.texture[slot] ? r.texture[slot] + TextureSharp : 0; };
+        if (!AgreedSharp(plan.images[k], texture, dwords) || !Place(info.images[k].sharp_fetch, dwords, flat)) {
+            return false;
+        }
+    }
+    for (u32 k = 0; k < info.samplers.size(); ++k) {
+        std::array<u32, 4> dwords;
+        const auto sampler = [&](u32 slot) { return r.sampler[slot]; };
+        if (!AgreedSharp(plan.samplers[k], sampler, dwords) || !Place(info.samplers[k].sharp_fetch, dwords, flat)) {
+            return false;
+        }
+    }
+    for (u32 k = 0; k < info.buffers.size(); ++k) {
+        const auto& bits = plan.buffers[k];
+        if (info.buffers[k].IsSpecial() || bits.all()) {
+            continue; // the renderer's own buffer, or the null buffer: nothing loaded for it
+        }
+        // Every candidate slot with the same address and size.
+        s32 slot = -1;
+        for (u32 c = 0; c < 14; ++c) {
+            if (!bits[c]) {
+                continue;
+            }
+            if (!r.constant_buffer_address[c]) {
+                return false;
+            }
+            if (slot < 0) {
+                slot = s32(c);
+            } else if (r.constant_buffer_address[c] != r.constant_buffer_address[slot] ||
+                       r.constant_buffer_size[c] != r.constant_buffer_size[slot]) {
+                return false;
+            }
+        }
+        if (slot < 0) {
+            return false;
+        }
+        AmdGpu::Buffer sharp;
+        std::memcpy(&sharp, plan.buffer_raw[k].data(), sizeof(sharp));
+        sharp.base_address = r.constant_buffer_address[slot];
+        sharp.num_records = (r.constant_buffer_size[slot] + 15) / 16;
+        std::array<u32, 4> dwords;
+        std::memcpy(dwords.data(), &sharp, sizeof(dwords));
+        if (!Place(info.buffers[k].sharp_fetch, dwords, flat)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The record's stage of a mesh draw's shader stage: the vertex and pixel shaders (mesh draws are
+// neither tessellated nor geometry-shaded); -1 for any other.
+int MeshStage(Shader::HwStage stage) {
+    return stage == Shader::HwStage::Vertex ? int(Vertex) : stage == Shader::HwStage::Fragment ? int(Pixel) : -1;
+}
+
 void Report(u64 now) {
+    if (flat_mode != FlatOff) {
+        PublishPlans();
+        std::printf("Render boundary: flat (%s): stages %llu, from the draw state %llu, without a record %llu, "
+                    "without a plan %llu, a resource without a sharp %llu; sharps compared %llu, differing %llu; "
+                    "plans %zu; on the GPU thread from the draw state %llu, not %llu\n",
+                    flat_mode == FlatFill ? "fill" : "check",
+                    static_cast<unsigned long long>(flat_tally.stages.load()),
+                    static_cast<unsigned long long>(flat_tally.filled.load()),
+                    static_cast<unsigned long long>(flat_tally.no_record.load()),
+                    static_cast<unsigned long long>(flat_tally.no_plan.load()),
+                    static_cast<unsigned long long>(flat_tally.failed.load()),
+                    static_cast<unsigned long long>(flat_tally.sharps.load()),
+                    static_cast<unsigned long long>(flat_tally.differed.load()),
+                    published_plans ? published_plans->size() : std::size_t(0),
+                    static_cast<unsigned long long>(flat_tally.gpu_filled.load()),
+                    static_cast<unsigned long long>(flat_tally.gpu_failed.load()));
+    }
     std::printf("Render boundary: method calls");
     for (u32 m = 0; m < Methods; ++m) {
         std::printf(" %s %llu", method_names[m], static_cast<unsigned long long>(method_calls[m].load()));
@@ -854,6 +1092,93 @@ bool Observing() {
     return observing;
 }
 
+bool FlatModeOn() {
+    return flat_mode != FlatOff;
+}
+
+void WorkerNoteTag(const void* nop) {
+    worker_tag_number = static_cast<const u32*>(nop)[2];
+    worker_tag_next = static_cast<const u32*>(nop) + 3;
+}
+
+void WorkerDraw(const void* packet) {
+    worker_has_record = packet == worker_tag_next && Find(worker_tag_number, worker_record) && worker_record.mesh;
+}
+
+bool WorkerFlat(const void* program, Shader::Info& info, Shader::HwStage stage) {
+    if (flat_mode != FlatFill) {
+        return false;
+    }
+    flat_tally.stages.fetch_add(1, std::memory_order_relaxed);
+    const int s = MeshStage(stage);
+    if (!worker_has_record || s < 0) {
+        flat_tally.no_record.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    const Plan* plan = WorkerPlan(program);
+    if (!plan) {
+        flat_tally.no_plan.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (!FillFrom(*plan, worker_record.stage[s], info, info.flattened_ud_buf)) {
+        flat_tally.failed.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    flat_tally.filled.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+bool GpuFlat(const void* program, Shader::Info& info, Shader::HwStage stage) {
+    const int s = MeshStage(stage);
+    const Plan* plan = s >= 0 && gpu_has_record ? WorkerPlan(program) : nullptr;
+    if (!plan || !FillFrom(*plan, gpu_record.stage[s], info, info.flattened_ud_buf)) {
+        flat_tally.gpu_failed.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    flat_tally.gpu_filled.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+void WorkerCheckFlat(const void* program, Shader::Info& info, Shader::HwStage stage) {
+    if (flat_mode != FlatCheck) {
+        return;
+    }
+    flat_tally.stages.fetch_add(1, std::memory_order_relaxed);
+    const int s = MeshStage(stage);
+    if (!worker_has_record || s < 0) {
+        flat_tally.no_record.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const Plan* plan = WorkerPlan(program);
+    if (!plan) {
+        flat_tally.no_plan.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    thread_local std::vector<u32> filled;
+    if (!FillFrom(*plan, worker_record.stage[s], info, filled)) {
+        flat_tally.failed.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    flat_tally.filled.fetch_add(1, std::memory_order_relaxed);
+    // The sharps each buffer gives, as the shader and PrepareResources read them.
+    u64 compared = 0, differed = 0;
+    auto check = [&](const auto& list) {
+        for (const auto& res : list) {
+            const auto walked = res.GetSharp(info);
+            std::swap(info.flattened_ud_buf, filled);
+            const auto from_state = res.GetSharp(info);
+            std::swap(info.flattened_ud_buf, filled);
+            ++compared;
+            differed += std::memcmp(&walked, &from_state, sizeof(walked)) != 0;
+        }
+    };
+    check(info.images);
+    check(info.samplers);
+    check(info.buffers);
+    flat_tally.sharps.fetch_add(compared, std::memory_order_relaxed);
+    flat_tally.differed.fetch_add(differed, std::memory_order_relaxed);
+}
+
 void NoteTag(const void* nop) {
     tag_number = static_cast<const u32*>(nop)[2];
     tag_next = static_cast<const u32*>(nop) + 3;
@@ -862,7 +1187,14 @@ void NoteTag(const void* nop) {
 void ObserveDraw(const void* packet, const AmdGpu::Regs& regs, bool indexed, u32 index_offset, bool indirect,
                  const Vulkan::PreparedDraw* prepared, u64 reg_checksum) {
     Record d;
-    if (packet != tag_next || !Find(tag_number, d)) {
+    const bool found = packet == tag_next && Find(tag_number, d);
+    if (flat_mode == FlatFill) {
+        gpu_has_record = found && d.mesh;
+        if (gpu_has_record) {
+            gpu_record = d;
+        }
+    }
+    if (!found) {
         ++tally.compared[Missing];
     } else {
         ++tally.compared[Found];
@@ -921,7 +1253,8 @@ void ObserveDraw(const void* packet, const AmdGpu::Regs& regs, bool indexed, u32
 
 void PatchImage(unsigned char* image, std::uint64_t) {
     const char* env = std::getenv("BB_RENDER_BOUNDARY");
-    if (!env || (std::strcmp(env, "observe") != 0 && std::strcmp(env, "mesh") != 0)) {
+    if (!env || (std::strcmp(env, "observe") != 0 && std::strcmp(env, "mesh") != 0 &&
+                 std::strcmp(env, "flat-check") != 0 && std::strcmp(env, "flat") != 0)) {
         return;
     }
     const char* census = std::getenv("BB_DRAW_CENSUS");
@@ -958,6 +1291,8 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     }
     observing = installed == wanted;
     take_mesh_draws = observing && std::strcmp(env, "mesh") == 0;
+    flat_mode = !observing ? FlatOff : std::strcmp(env, "flat") == 0 ? FlatFill
+              : std::strcmp(env, "flat-check") == 0 ? FlatCheck : FlatOff;
     std::printf("Render boundary: observing draws%s (%d of %d hooks)\n",
                 take_mesh_draws ? ", mesh draws' resources from the draw state" : "", installed, wanted);
     last_report = NowMs();

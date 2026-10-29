@@ -46,6 +46,9 @@ struct PreparedStage {
     const AmdGpu::Sampler* sampler_sharps;
     const AmdGpu::Buffer* buffer_sharps;
     u32 num_images, num_samplers, num_buffers;
+    /// N2.3: `flat` written from the engine's draw state (BbRenderBoundary::WorkerFlat); the GPU
+    /// thread checks it the same way (GpuFlat) instead of running the walker.
+    bool from_state;
 };
 
 /// Key of Rasterizer's texture description cache for a T# bound through `res`.

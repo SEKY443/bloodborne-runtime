@@ -13,6 +13,10 @@ union Regs;
 namespace Vulkan {
 struct PreparedDraw;
 }
+namespace Shader {
+struct Info;
+enum class HwStage : std::uint32_t;
+}
 
 namespace BbRenderBoundary {
 
@@ -36,5 +40,21 @@ void NoteTag(const void* nop);
 /// `reg_checksum`.
 void ObserveDraw(const void* packet, const AmdGpu::Regs& regs, bool indexed, std::uint32_t index_offset,
                  bool indirect, const Vulkan::PreparedDraw* prepared, std::uint64_t reg_checksum);
+
+/// N2.3 (BB_RENDER_BOUNDARY=flat or flat-check): whether the draw-preparation workers read the
+/// boundary's records.
+bool FlatModeOn();
+/// A draw-preparation worker, at a NOP tag and then at each draw packet it prepares.
+void WorkerNoteTag(const void* nop);
+void WorkerDraw(const void* packet);
+/// flat: the stage's flattened user data written from the draw state, without the walker; false
+/// when the draw has no record, its program no complete slot map, or a resource no sharp there.
+bool WorkerFlat(const void* program, Shader::Info& info, Shader::HwStage stage);
+/// flat-check, after the walker: fills a second buffer from the draw state and compares the
+/// sharps each gives.
+void WorkerCheckFlat(const void* program, Shader::Info& info, Shader::HwStage stage);
+/// flat, on the GPU thread checking a prepared stage the worker filled: the same fill from the
+/// draw's record (kept by ObserveDraw), into `info`'s flattened user data; false without one.
+bool GpuFlat(const void* program, Shader::Info& info, Shader::HwStage stage);
 
 } // namespace BbRenderBoundary

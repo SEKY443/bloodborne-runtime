@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "bbport_render_boundary.h"
 #include "bbport_threads.h"
 #include "bbport_toggles.h"
 #include "common/thread.h"
@@ -437,10 +438,20 @@ void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
         u64 checksum = target->start_checksum;
         u32 ordinal = 0;
         arena = FlatArena{};
+        const bool boundary = BbRenderBoundary::FlatModeOn();
         ForEachPacket(target->commands, [&](const AmdGpu::PM4Header* header) {
             AmdGpu::Liverpool::ApplyGraphicsRegisterPacket(*regs, header, checksum);
+            // N2.3: the render boundary's tag before a draw names the engine's record of it.
+            if (boundary && header->type3.opcode == AmdGpu::PM4ItOpcode::Nop &&
+                header->type3.NumWords() >= 2 &&
+                reinterpret_cast<const u32*>(header)[1] == BbRenderBoundary::TagPayload) {
+                BbRenderBoundary::WorkerNoteTag(header);
+            }
             if (!IsDirectDraw(header->type3.opcode)) {
                 return;
+            }
+            if (boundary) {
+                BbRenderBoundary::WorkerDraw(header);
             }
             // Past the GPU thread the draws are no longer worth preparing.
             if (ordinal < target->num_draws &&
@@ -462,6 +473,7 @@ void DrawPreparation::WorkerLoop(std::stop_token stop, u32 index) {
                             .pgm_base = stage.pgm_base,
                             .flat = arena.Append(*stage.flat),
                             .flat_size = static_cast<u32>(stage.flat->size()),
+                            .from_state = stage.from_state,
                         };
                         PrepareResources(prep_worker.infos.at(stage.program), draw.stages[i],
                                          arena);

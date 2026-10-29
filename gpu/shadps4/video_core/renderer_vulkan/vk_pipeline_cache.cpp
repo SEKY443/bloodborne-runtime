@@ -36,6 +36,7 @@
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "bbport_guest_memory.h"
+#include "bbport_render_boundary.h"
 #include "bbport_settings.h"
 #include "game_profile.h"
 #include "bbport_toggles.h"
@@ -428,7 +429,15 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
         auto& info = const_cast<Program*>(stage.program)->info;
         info.pgm_base = params.Base();
         info.user_data = params.user_data;
-        info.RefreshFlatBuf();
+        // N2.3: a stage the worker filled from the draw state is filled again from this draw's
+        // record and compared, without the walker; if it cannot be, the draw is prepared here.
+        if (stage.from_state) {
+            if (!BbRenderBoundary::GpuFlat(stage.program, info, stage.hw_stage)) {
+                return nullptr;
+            }
+        } else {
+            info.RefreshFlatBuf();
+        }
         if (info.pgm_base != stage.pgm_base || info.flattened_ud_buf.size() != stage.flat_size ||
             std::memcmp(info.flattened_ud_buf.data(), stage.flat,
                         stage.flat_size * sizeof(u32)) != 0) {
@@ -1321,7 +1330,13 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
             return {};
         }
         runtime_fault_recover = &recover;
-        info.RefreshFlatBuf();
+        // N2.3: a mesh draw's flattened user data from the engine's draw state, without the walker
+        // (BB_RENDER_BOUNDARY=flat); flat-check also fills it and compares (bbport_render_boundary).
+        const bool from_state = BbRenderBoundary::WorkerFlat(program, info, hw_stage);
+        if (!from_state) {
+            info.RefreshFlatBuf();
+            BbRenderBoundary::WorkerCheckFlat(program, info, hw_stage);
+        }
         auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
         runtime_fault_recover = nullptr;
         const auto it = std::ranges::find(program->modules, spec, &Program::Module::spec);
@@ -1332,7 +1347,7 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         info.AddBindings(binding);
         const size_t perm_idx = std::distance(program->modules.begin(), it);
         worker.stages.push_back(
-            {program, params.hash, hw_stage, info.pgm_base, &info.flattened_ud_buf});
+            {program, params.hash, hw_stage, info.pgm_base, &info.flattened_ud_buf, from_state});
         return std::make_tuple(&info, it->module, it->spec.fetch_shader_data,
                                HashCombine(params.hash, perm_idx));
     }

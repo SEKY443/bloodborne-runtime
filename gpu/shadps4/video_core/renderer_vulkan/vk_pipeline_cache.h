@@ -121,6 +121,7 @@ struct PrepWorker {
         Shader::HwStage hw_stage;
         VAddr pgm_base;
         const std::vector<u32>* flat;
+        bool from_state = false; ///< N2.3: the flat buffer from the engine's draw state
     };
     // Node-based: stages keep pointers to these Infos while later stages are inserted.
     std::unordered_map<const Program*, Shader::Info> infos;

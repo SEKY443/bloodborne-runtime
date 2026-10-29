@@ -243,7 +243,7 @@ the test save, translator, no faults):
 |---|---|---|
 | N2.1 · the plan | 100% `████████████████████` | This section |
 | N2.2 · the inventory | 100% `████████████████████` | The shaders use the user data only to locate their resources (below) |
-| N2.3 · mesh draws from the draw state | 0% `░░░░░░░░░░░░░░░░░░░░` | Now: the flattened user data of mesh draws written from the draw state through N6's slot maps, without the walker ([design](#n23s-design-the-flat-buffer-from-the-draw-state)); measured against today's path |
+| N2.3 · mesh draws from the draw state | 100% `████████████████████` | Done, opt-in (`BB_RENDER_BOUNDARY=flat`): mesh draws' flattened user data from the draw state on the workers and the GPU thread, without the walker; exact, no CPU change measured ([below](#n23s-design-the-flat-buffer-from-the-draw-state)) |
 | N2.4 · the other draw kinds | 0% `░░░░░░░░░░░░░░░░░░░░` | The other draw methods' draws, then the compute passes, render-target passes and Scaleform: each from its own boundary, or left to the packet path |
 | N2.5 · ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | The shaders converted once on the player's machine, keyed by the game's shader code, so none is compiled during play |
 
@@ -292,6 +292,27 @@ The steps:
    runs the walker and compares the two buffers (the check that mesh mode's "0 differing" was).
 4. **Measured** against today's path in alternating runs: the workers' CPU time, the draws they
    prepare, frame time. Draws without a record or a frozen map keep the walker.
+
+**What it gave** (Cathedral Ward, M3 Pro, the recompiled library):
+
+- **Exact:** `flat-check` compared 42,154,935 sharps filled from the draw state with the walker's,
+  0 differing. A plan keeps every candidate slot of a resource (slots that held the same sharp in
+  every draw it was learnt from, as the engine's default samplers do) and is used only while the
+  candidates still agree, so the right slot is always among them.
+- **Coverage:** 61% of the shader stages of prepared draws (every mesh draw's vertex and pixel
+  stage with a plan: 139 programs); the other draw kinds keep the walker (N2.4).
+- **Both threads:** the GPU thread checks a prepared draw by computing its flattened user data
+  again, so it also fills the stages the worker filled, from the draw's record (`GpuFlat`), instead
+  of walking: 3,725,047 of 3,725,047 such stages in a run. Without it the zeros the fill leaves
+  between sharps failed the comparison and the GPU thread prepared those draws itself (92–129
+  frames over 40 ms a run against about 35).
+- **No CPU change measured:** three alternating pairs, `flat` against `observe`, 430% against 424%,
+  within the runs' spread. What does cost is the observer itself: with either mode the game takes
+  about 425%, against about 345% without the render boundary; its hooks on every engine draw call
+  must become cheap before drawing from the engine can be the default.
+
+N2.3's worth is the step N2.5 needs: mesh shaders' resources come from the draw state, not from
+the PS4 user data.
 
 ### What N2 builds on
 
