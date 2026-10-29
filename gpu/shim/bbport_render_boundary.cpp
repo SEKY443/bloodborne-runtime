@@ -879,7 +879,7 @@ void ReportSlotMaps() {
     std::printf("\n");
 }
 
-// ---- N2.3: the flattened user data of mesh draws from the draw state ----
+// ---- N2.3, N2.4: the flattened user data of the methods' draws from the draw state ----
 // A plan per shader program whose slot map is complete (each texture, sampler and constant buffer
 // with at least one candidate slot, the buffers' V# dwords known, or the null buffer), learnt over
 // at least PlanDraws draws; the GPU thread publishes them and the workers read a copy. A resource
@@ -1077,9 +1077,13 @@ bool FillFrom(const Plan& plan, const Record::Resources& r, const Shader::Info& 
     return true;
 }
 
-// The record's stage of a mesh draw's shader stage: the vertex and pixel shaders (mesh draws are
-// neither tessellated nor geometry-shaded); -1 for any other.
-int MeshStage(Shader::HwStage stage) {
+// The record's stage of a draw's shader stage: the vertex and pixel shaders of a draw that is
+// neither tessellated nor geometry-shaded (there the hardware's vertex stage runs the domain shader
+// or the copy shader); -1 for any other, which the walker fills.
+int FillStage(const Record& r, Shader::HwStage stage) {
+    if (r.shader[Hull] || r.shader[Domain] || r.shader[Geometry]) {
+        return -1;
+    }
     return stage == Shader::HwStage::Vertex ? int(Vertex) : stage == Shader::HwStage::Fragment ? int(Pixel) : -1;
 }
 
@@ -1156,7 +1160,9 @@ void WorkerNoteTag(const void* nop) {
 }
 
 void WorkerDraw(const void* packet) {
-    worker_has_record = packet == worker_tag_next && Find(worker_tag_number, worker_record) && worker_record.mesh;
+    // N2.4: every method draw with a record, not only mesh draws (the plans are learnt from all of
+    // them, and the GPU thread's check holds for all).
+    worker_has_record = packet == worker_tag_next && Find(worker_tag_number, worker_record);
 }
 
 bool WorkerFlat(const void* program, Shader::Info& info, Shader::HwStage stage) {
@@ -1164,7 +1170,7 @@ bool WorkerFlat(const void* program, Shader::Info& info, Shader::HwStage stage) 
         return false;
     }
     flat_tally.stages.fetch_add(1, std::memory_order_relaxed);
-    const int s = MeshStage(stage);
+    const int s = FillStage(worker_record, stage);
     if (!worker_has_record || s < 0) {
         flat_tally.no_record.fetch_add(1, std::memory_order_relaxed);
         return false;
@@ -1183,7 +1189,7 @@ bool WorkerFlat(const void* program, Shader::Info& info, Shader::HwStage stage) 
 }
 
 bool GpuFlat(const void* program, Shader::Info& info, Shader::HwStage stage) {
-    const int s = MeshStage(stage);
+    const int s = FillStage(gpu_record, stage);
     const Plan* plan = s >= 0 && gpu_has_record ? WorkerPlan(program) : nullptr;
     if (!plan || !FillFrom(*plan, gpu_record.stage[s], info, info.flattened_ud_buf)) {
         flat_tally.gpu_failed.fetch_add(1, std::memory_order_relaxed);
@@ -1198,7 +1204,7 @@ void WorkerCheckFlat(const void* program, Shader::Info& info, Shader::HwStage st
         return;
     }
     flat_tally.stages.fetch_add(1, std::memory_order_relaxed);
-    const int s = MeshStage(stage);
+    const int s = FillStage(worker_record, stage);
     if (!worker_has_record || s < 0) {
         flat_tally.no_record.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -1243,7 +1249,7 @@ void ObserveDraw(const void* packet, const AmdGpu::Regs& regs, bool indexed, u32
     Record d;
     const bool found = packet == tag_next && Find(tag_number, d);
     if (flat_mode == FlatFill) {
-        gpu_has_record = found && d.mesh;
+        gpu_has_record = found;
         if (gpu_has_record) {
             gpu_record = d;
         }

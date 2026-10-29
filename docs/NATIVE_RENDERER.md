@@ -31,10 +31,10 @@ steps.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 80% `████████████████░░░░` | N0, N1, N4, N5 and N6 done; N2 at 60% (N2.3 done: mesh draws from the draw state, opt-in) |
+| **R5 · native renderer** | 80% `████████████████░░░░` | N0, N1, N4, N5 and N6 done; N2 at 65% (N2.3 done, N2.4 begun: the draw methods' draws from the draw state, opt-in) |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
-| N2 · shaders from the draw state, then ahead of time | 60% `████████████░░░░░░░░` | 3 of 5 steps: the plan, the inventory, mesh draws from the draw state (opt-in). Next: the other draw kinds (N2.4) and the shaders ahead of time (N2.5) |
+| N2 · shaders from the draw state, then ahead of time | 65% `█████████████░░░░░░░` | 3 of 5 steps and a quarter of N2.4: the plan, the inventory, every draw method's draws from the draw state (opt-in). Next: the rest of N2.4 (compute passes, render-target passes, Scaleform) and the shaders ahead of time (N2.5) |
 | N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N2. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 100% `████████████████████` | Accepted (the maintainer, 2026-10-29): M1–M4, native Metal the default since 0.9.0 RC 1 |
@@ -244,7 +244,7 @@ the test save, translator, no faults):
 | N2.1 · the plan | 100% `████████████████████` | This section |
 | N2.2 · the inventory | 100% `████████████████████` | The shaders use the user data only to locate their resources (below) |
 | N2.3 · mesh draws from the draw state | 100% `████████████████████` | Done, opt-in (`BB_RENDER_BOUNDARY=flat`): mesh draws' flattened user data from the draw state on the workers and the GPU thread, without the walker; exact; the observer still costs 42 CPU points ([below](#n23s-design-the-flat-buffer-from-the-draw-state)) |
-| N2.4 · the other draw kinds | 0% `░░░░░░░░░░░░░░░░░░░░` | The other draw methods' draws, then the compute passes, render-target passes and Scaleform: each from its own boundary, or left to the packet path |
+| N2.4 · the other draw kinds | 25% `█████░░░░░░░░░░░░░░░` | The draw methods' other draws: done, with mesh draws under `flat` (88% of the shader stages of prepared draws; tessellated and geometry-shaded draws keep the walker). Next: the compute passes, render-target passes and Scaleform, each from its own boundary, or left to the packet path |
 | N2.5 · ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | The shaders converted once on the player's machine, keyed by the game's shader code, so none is compiled during play |
 
 ### The inventory (N2.2)
@@ -295,12 +295,15 @@ The steps:
 
 **What it gave** (Cathedral Ward, M3 Pro, the recompiled library):
 
-- **Exact:** `flat-check` compared 42,154,935 sharps filled from the draw state with the walker's,
-  0 differing. A plan keeps every candidate slot of a resource (slots that held the same sharp in
+- **Exact:** `flat-check` compared 51,738,285 sharps filled from the draw state with the walker's,
+  0 differing, with every draw method's draws (N2.4). A plan keeps every candidate slot of a resource (slots that held the same sharp in
   every draw it was learnt from, as the engine's default samplers do) and is used only while the
   candidates still agree, so the right slot is always among them.
-- **Coverage:** 61% of the shader stages of prepared draws (every mesh draw's vertex and pixel
-  stage with a plan: 139 programs); the other draw kinds keep the walker (N2.4).
+- **Coverage:** 88% of the shader stages of prepared draws: the vertex and pixel stage of every
+  draw method's draw with a plan (140 programs), mesh draws (61%) and the methods' other draws
+  (N2.4), at the same cost. Tessellated and geometry-shaded draws (their hardware vertex stage runs
+  another shader), draws outside the methods (9%) and programs without a complete plan (3%) keep
+  the walker.
 - **Both threads:** the GPU thread checks a prepared draw by computing its flattened user data
   again, so it also fills the stages the worker filled, from the draw's record (`GpuFlat`), instead
   of walking: 3,725,047 of 3,725,047 such stages in a run. Without it the zeros the fill leaves
