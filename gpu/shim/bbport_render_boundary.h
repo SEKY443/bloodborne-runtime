@@ -57,4 +57,14 @@ void WorkerCheckFlat(const void* program, Shader::Info& info, Shader::HwStage st
 /// draw's record (kept by ObserveDraw), into `info`'s flattened user data; false without one.
 bool GpuFlat(const void* program, Shader::Info& info, Shader::HwStage stage);
 
+/// N2.4, compute passes. The packet reader, at a dispatch packet in the game's own command buffer:
+/// a tag before it names the record of its compute state (CG::ResourceBinder::commitCompute).
+void ObserveDispatch(const void* packet);
+/// flat, on the GPU thread selecting the dispatch's program: its flattened user data written from
+/// the compute state, without the walker; false without a record or a complete plan.
+bool GpuComputeFlat(const void* program, Shader::Info& info, Shader::HwStage stage);
+/// After the walker: the program's slot map learnt from the dispatch (until it has a plan), and
+/// with flat-check the fill compared.
+void LearnCompute(const void* program, Shader::Info& info, Shader::HwStage stage);
+
 } // namespace BbRenderBoundary

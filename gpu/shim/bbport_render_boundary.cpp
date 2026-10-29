@@ -56,6 +56,20 @@ constexpr u64 gnm_offsets[] = {
     0x10746f0, // drawIndexIndirect
 };
 constexpr u64 GnmTag = 0x100;
+// N2.4: compute passes. CG::ResourceBinder::commitCompute(binder, context, CG::ComputeState*) binds a
+// dispatch's resources (CG::GraphicsContext::dispatch and the surface operations reach it through
+// beforeDispatch, which ends in it); a ComputeState holds one CgShaderStage at +0x1e70. libGnm's
+// dispatch follows on the same thread.
+constexpr u64 CommitCompute = 0x26cbe90, ComputeStage = 0x1e70;
+// After its stage, a ComputeState's writable resources: 8 objects, each with its 32-byte T# (or a
+// 16-byte V#) at +0x10, like a texture's (commitCompute binds them).
+constexpr u64 ComputeWritable = 0x2368, WritableSharp = 0x10;
+constexpr u32 WritableSlots = 8;
+constexpr u64 gnm_dispatch_offsets[] = {
+    0x1074c50, // Gnm::DrawCommandBuffer::dispatch
+    0x1074de0, // dispatchIndirect
+};
+constexpr u64 ComputeTag = 0x101, GnmDispatchTag = 0x102;
 constexpr u64 MeshDraw = 0x21d0640, MeshDrawSize = 2621; // CG::MeshRenderer::drawMesh
 
 // CgDrawState (annotations/structs.h).
@@ -78,6 +92,10 @@ constexpr u64 ContextGeometryManager = 0xb6f8, GeometryManagerAddressOf = 0x26d0
 // CB_COLOR_BASE is the first register, DB_Z_READ_BASE the third (the address shifted by 8).
 constexpr u64 GnmTarget = 0x10, ColorBase = 0x0, DepthReadBase = 0x8;
 enum Stage { Vertex, Hull, Domain, Geometry, Pixel, StageCount };
+// Candidate slots of a stage's images (the textures, then the writable resources) and of its
+// buffers (the constant buffers, then the writable resources).
+constexpr u32 ConstantBufferSlots = 14, ImageSlots = StageTextureSlots + WritableSlots,
+              BufferSlots = ConstantBufferSlots + WritableSlots;
 constexpr const char* stage_names[StageCount] = {"vertex", "hull", "domain", "geometry", "pixel"};
 // libGnm's command buffer: the end of its space and the write pointer.
 constexpr u64 CommandEnd = 0x8, CommandPointer = 0x10;
@@ -87,7 +105,8 @@ constexpr u32 NopTwoDwords = 0xc0011000;
 struct Record {
     u64 key; // the record's number
     u32 method, topology, index_format, count, instances, base_vertex;
-    bool mesh; // made by CG::MeshRenderer::drawMesh
+    bool mesh;    // made by CG::MeshRenderer::drawMesh
+    bool compute; // a dispatch (N2.4): its compute stage's resources in stage[0]
     u64 index_start; // the first index's address; 0 when unknown (a managed buffer)
     u64 shader[StageCount];
     // The output state; a block the draw state leaves NULL (the engine's defaults) is not compared.
@@ -108,6 +127,7 @@ struct Record {
         u64 sampler[16];
         u32 constant_buffer_size[14];
         u64 constant_buffer_address[14];
+        u64 writable[WritableSlots]; // a dispatch's writable resources (objects); 0 for draws
         u32 textures;
         u64 texture[StageTextureSlots]; // last: a stage's used part is a prefix
     } stage[StageCount];
@@ -145,6 +165,34 @@ struct Plan;
 const Plan* WorkerPlan(const void* program); // a program's published plan (N2.3, below)
 u64 image_base = 0;
 std::atomic<u64> method_calls[Methods], filed{0}, gnm_without_method{0}, gnm_nested{0}, no_room{0}, next_number{1};
+// N2.4's compute passes: commitCompute's calls, dispatches filed, libGnm dispatches without a
+// compute state pending.
+std::atomic<u64> compute_calls{0}, dispatches_filed{0}, gnm_dispatch_without_state{0};
+// Where libGnm's dispatches without a compute state come from (return addresses, image offsets).
+constexpr u32 DispatchSites = 32;
+std::atomic<u64> dispatch_site[DispatchSites], dispatch_site_calls[DispatchSites];
+void CountDispatchSite(u64 back) {
+    for (u32 i = 0; i < DispatchSites; ++i) {
+        u64 seen = dispatch_site[i].load(std::memory_order_relaxed);
+        if (!seen && dispatch_site[i].compare_exchange_strong(seen, back)) {
+            seen = back;
+        }
+        if (seen == back) {
+            dispatch_site_calls[i].fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+}
+// The GPU thread's side (ObserveDispatch, GpuComputeFlat, LearnCompute): the dispatch's record.
+Record gpu_compute_record;
+bool gpu_compute_has_record = false;
+struct ComputeTally {
+    u64 packets = 0, found = 0, stages = 0, filled = 0, no_plan = 0, failed = 0, sharps = 0, differed = 0;
+    // Dispatch stages without a record (the surface operations'): whose program walks resource
+    // tables, and whose takes every sharp from the user-data registers.
+    u64 unrecorded_tables = 0, unrecorded_registers = 0;
+} compute_tally;
+
 
 // The parts of a record that hold data: everything but each stage's unused texture slots.
 template <typename F>
@@ -217,27 +265,31 @@ u32 SlotHash(const void* data, std::size_t size) {
     return u32(hash ^ hash >> 32) | 1;
 }
 
+// One CgShaderStage's resources into the record's stage s (nothing when the stage has no shader).
+void ReadStage(u64 stage, int s, Record& d) {
+    auto& r = d.stage[s];
+    if (!Read<u64>(stage + StageShader)) {
+        return;
+    }
+    for (u32 i = 0; i < StageTextureSlots; ++i) {
+        r.texture[i] = Read<u64>(stage + StageTextures + 8 * i);
+        if (r.texture[i]) {
+            r.textures = i + 1;
+        }
+    }
+    for (u32 i = 0; i < 16; ++i) {
+        r.sampler[i] = Read<u64>(stage + StageSamplers + 8 * i);
+    }
+    for (u32 i = 0; i < 14; ++i) {
+        const u64 buffer = Read<u64>(stage + StageConstantBuffers + 8 * i);
+        pending.constant_buffer[s][i] = buffer;
+        r.constant_buffer_size[i] = buffer ? Read<u32>(buffer + ConstantBufferSize) : 0;
+    }
+}
+
 void ReadResources(u64 state, Record& d) {
     for (int s = 0; s < StageCount; ++s) {
-        const u64 stage = state + Stages + s * StageSize;
-        auto& r = d.stage[s];
-        if (!Read<u64>(stage + StageShader)) {
-            continue;
-        }
-        for (u32 i = 0; i < StageTextureSlots; ++i) {
-            r.texture[i] = Read<u64>(stage + StageTextures + 8 * i);
-            if (r.texture[i]) {
-                r.textures = i + 1;
-            }
-        }
-        for (u32 i = 0; i < 16; ++i) {
-            r.sampler[i] = Read<u64>(stage + StageSamplers + 8 * i);
-        }
-        for (u32 i = 0; i < 14; ++i) {
-            const u64 buffer = Read<u64>(stage + StageConstantBuffers + 8 * i);
-            pending.constant_buffer[s][i] = buffer;
-            r.constant_buffer_size[i] = buffer ? Read<u32>(buffer + ConstantBufferSize) : 0;
-        }
+        ReadStage(state + Stages + s * StageSize, s, d);
     }
     d.input_layout = Read<u64>(state);
     for (u32 i = 0; i < 32; ++i) {
@@ -254,13 +306,23 @@ void ReadResources(u64 state, Record& d) {
     }
 }
 
-void __attribute__((sysv_abi)) OnMethod(u64 tag, const Core::GuestRegisterSnapshot* r) {
-    method_calls[tag].fetch_add(1, std::memory_order_relaxed);
+// A new pending record: empty, and nothing left of the last one's buffers (a stage without a
+// shader keeps no constant buffers, whose addresses libGnm's draw would otherwise look up).
+void StartRecord() {
     Record& d = pending.record;
     for (int s = 0; s < StageCount; ++s) {
         d.stage[s].textures = 0;
     }
     ForEachPart(d, [&](std::size_t at, std::size_t size) { std::memset(reinterpret_cast<char*>(&d) + at, 0, size); });
+    std::memset(pending.constant_buffer, 0, sizeof(pending.constant_buffer));
+    std::memset(pending.managed_vertex, 0, sizeof(pending.managed_vertex));
+    pending.managed_index = 0;
+}
+
+void __attribute__((sysv_abi)) OnMethod(u64 tag, const Core::GuestRegisterSnapshot* r) {
+    method_calls[tag].fetch_add(1, std::memory_order_relaxed);
+    StartRecord();
+    Record& d = pending.record;
     d.method = u32(tag);
     pending.context = r->rdi;
     // Called from the mesh draw: its return address is in CG::MeshRenderer::drawMesh. From the
@@ -326,8 +388,10 @@ void __attribute__((sysv_abi)) OnMethod(u64 tag, const Core::GuestRegisterSnapsh
     pending.valid = true;
 }
 
+bool FileAndTag(const Core::GuestRegisterSnapshot* r);
+
 void __attribute__((sysv_abi)) OnGnmDraw(u64, const Core::GuestRegisterSnapshot* r) {
-    if (!pending.valid) {
+    if (!pending.valid || pending.record.compute) {
         gnm_without_method.fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -338,13 +402,21 @@ void __attribute__((sysv_abi)) OnGnmDraw(u64, const Core::GuestRegisterSnapshot*
         gnm_nested.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    if (FileAndTag(r)) {
+        filed.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+// The pending record filed under a new number, and a NOP naming it written into the command
+// buffer (rdi: libGnm's DrawCommandBuffer) just before the packet libGnm is about to write.
+bool FileAndTag(const Core::GuestRegisterSnapshot* r) {
     pending.valid = false;
     const u64 buffer = r->rdi;
     u32* at = reinterpret_cast<u32*>(Read<u64>(buffer + CommandPointer));
     const u64 end = Read<u64>(buffer + CommandEnd);
     if (end < reinterpret_cast<u64>(at + 3)) {
         no_room.fetch_add(1, std::memory_order_relaxed); // the draw refills the buffer itself
-        return;
+        return false;
     }
     // The binder has run: the buffer manager knows this draw's constant buffers.
     const u64 manager = pending.context + ContextBufferManager;
@@ -376,7 +448,37 @@ void __attribute__((sysv_abi)) OnGnmDraw(u64, const Core::GuestRegisterSnapshot*
     at[2] = u32(number);
     const u64 next = reinterpret_cast<u64>(at + 3);
     std::memcpy(reinterpret_cast<void*>(buffer + CommandPointer), &next, sizeof(next));
-    filed.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// N2.4: commitCompute (rsi: the context, rdx: the ComputeState): the dispatch's record.
+void __attribute__((sysv_abi)) OnCompute(u64, const Core::GuestRegisterSnapshot* r) {
+    compute_calls.fetch_add(1, std::memory_order_relaxed);
+    StartRecord();
+    Record& d = pending.record;
+    d.compute = true;
+    pending.context = r->rsi;
+    const u64 stage = r->rdx + ComputeStage;
+    const u64 shader = Read<u64>(stage + StageShader);
+    d.shader[0] = shader ? Read<u64>(shader + ShaderCode) : 0;
+    ReadStage(stage, 0, d);
+    for (u32 i = 0; i < WritableSlots; ++i) {
+        d.stage[0].writable[i] = Read<u64>(r->rdx + ComputeWritable + 8 * i);
+    }
+    pending.valid = true;
+}
+
+// libGnm's dispatch after commitCompute: the dispatch takes the compute record (a draw method's
+// record is left for its own draw).
+void __attribute__((sysv_abi)) OnGnmDispatch(u64, const Core::GuestRegisterSnapshot* r) {
+    if (!pending.valid || !pending.record.compute) {
+        gnm_dispatch_without_state.fetch_add(1, std::memory_order_relaxed);
+        CountDispatchSite(bbcpu_guest_return(Read<u64>(r->rsp)) - image_base);
+        return;
+    }
+    if (FileAndTag(r)) {
+        dispatches_filed.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 // The packet reader's side: GPU thread only.
@@ -507,9 +609,9 @@ struct ResourceTally {
 } resources;
 
 struct SlotMap {
-    std::vector<std::bitset<StageTextureSlots>> images;
+    std::vector<std::bitset<ImageSlots>> images;
     std::vector<std::bitset<16>> samplers;
-    std::vector<std::bitset<14>> buffers; // constant buffers; the null buffer keeps every bit
+    std::vector<std::bitset<BufferSlots>> buffers; // the null buffer keeps every bit
     std::vector<std::bitset<32>> attributes;
     std::vector<s64> attribute_offsets; // the V#'s address less its slot's; INT64_MIN: not fixed
     bool started = false;
@@ -717,6 +819,94 @@ void ReportInventory() {
     }
 }
 
+// A stage's slot map learnt from one draw or dispatch: for each resource the shader read (the
+// walker's sharps in `p`), the record's slots that held it.
+void LearnStage(const Vulkan::PreparedStage& p, const Record& d, int s) {
+    ProgramInventory& entry = Inventory(p);
+    ++entry.draws;
+    entry.mesh_draws += d.mesh;
+    const auto& r = d.stage[s];
+    u32 texture_hash[ImageSlots], sampler_hash[16];
+    for (u32 w = 0; w < WritableSlots; ++w) {
+        texture_hash[StageTextureSlots + w] =
+            r.writable[w] ? SlotHash(reinterpret_cast<const void*>(r.writable[w] + WritableSharp), sizeof(AmdGpu::Image))
+                          : 0;
+    }
+    for (u32 slot = 0; slot < StageTextureSlots; ++slot) {
+        texture_hash[slot] = slot < r.textures && r.texture[slot]
+                                 ? SlotHash(reinterpret_cast<const void*>(r.texture[slot] + TextureSharp),
+                                            sizeof(AmdGpu::Image))
+                                 : 0;
+    }
+    for (u32 slot = 0; slot < 16; ++slot) {
+        sampler_hash[slot] = r.sampler[slot] ? SlotHash(reinterpret_cast<const void*>(r.sampler[slot]), 16) : 0;
+    }
+    SlotMap& map = slot_maps[{p.program, 0}];
+    for (u32 k = 0; k < p.num_images; ++k) {
+        const u32 hash = SlotHash(&p.image_sharps[k], sizeof(AmdGpu::Image));
+        std::bitset<ImageSlots> candidates;
+        for (u32 slot = 0; slot < ImageSlots; ++slot) {
+            candidates[slot] = texture_hash[slot] == hash;
+        }
+        ++resources.read[Texture];
+        resources.found[Texture] += candidates.any();
+        Narrow(map.images, k, candidates, map.started);
+    }
+    for (u32 k = 0; k < p.num_samplers; ++k) {
+        const u32 hash = SlotHash(&p.sampler_sharps[k], 16);
+        std::bitset<16> candidates;
+        for (u32 slot = 0; slot < 16; ++slot) {
+            candidates[slot] = sampler_hash[slot] == hash;
+        }
+        ++resources.read[Sampler];
+        resources.found[Sampler] += candidates.any();
+        Narrow(map.samplers, k, candidates, map.started);
+    }
+    ++map.draws;
+    if (flat_mode != FlatOff && p.program && p.flat) {
+        const auto& buffers = p.program->info.buffers;
+        map.buffer_raw.resize(buffers.size());
+        map.buffer_raw_known.resize(buffers.size());
+        for (u32 k = 0; k < buffers.size() && k < p.num_buffers; ++k) {
+            if (map.buffer_raw_known[k]) {
+                continue;
+            }
+            const auto& fetch = buffers[k].sharp_fetch;
+            bool ok = true;
+            for (u32 i = 0; i < 4; ++i) {
+                const bool loaded = (fetch.load_mask >> i) & 1;
+                ok = ok && (!loaded || fetch.offsets[i] < p.flat_size);
+                map.buffer_raw[k][i] = loaded && ok ? p.flat[fetch.offsets[i]] : fetch.immediates[i];
+            }
+            map.buffer_raw_known[k] = ok;
+        }
+    }
+    for (u32 k = 0; k < p.num_buffers; ++k) {
+        const AmdGpu::Buffer& sharp = p.buffer_sharps[k];
+        std::bitset<BufferSlots> candidates;
+        if (sharp.base_address == 1 && sharp.num_records == 0) {
+            candidates.set(); // shadPS4's null buffer, not a resource of the game's
+        } else {
+            for (u32 slot = 0; slot < ConstantBufferSlots; ++slot) {
+                candidates[slot] = r.constant_buffer_address[slot] == sharp.base_address &&
+                                   (r.constant_buffer_size[slot] + 15) / 16 == sharp.num_records;
+            }
+            for (u32 w = 0; w < WritableSlots; ++w) { // a writable buffer: its V# as the object holds it
+                candidates[ConstantBufferSlots + w] =
+                    r.writable[w] &&
+                    std::memcmp(reinterpret_cast<const void*>(r.writable[w] + WritableSharp), &sharp, 16) == 0;
+            }
+            ++resources.read[ConstantBuffer];
+            resources.found[ConstantBuffer] += candidates.any();
+        }
+        Narrow(map.buffers, k, candidates, map.started);
+    }
+    map.started = true;
+    if (take_mesh_draws && d.mesh) {
+        TakeResources(p, r, map);
+    }
+}
+
 void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::PreparedDraw* prepared,
                       u64 reg_checksum) {
     if (!prepared || prepared->state.load(std::memory_order_acquire) != Vulkan::PreparedDraw::Ready ||
@@ -751,79 +941,7 @@ void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::P
         if (flat_mode != FlatOff && WorkerPlan(p.program)) {
             continue;
         }
-        ProgramInventory& entry = Inventory(p);
-        ++entry.draws;
-        entry.mesh_draws += d.mesh;
-        const auto& r = d.stage[s];
-        u32 texture_hash[StageTextureSlots], sampler_hash[16];
-        for (u32 slot = 0; slot < StageTextureSlots; ++slot) {
-            texture_hash[slot] = slot < r.textures && r.texture[slot]
-                                     ? SlotHash(reinterpret_cast<const void*>(r.texture[slot] + TextureSharp),
-                                                sizeof(AmdGpu::Image))
-                                     : 0;
-        }
-        for (u32 slot = 0; slot < 16; ++slot) {
-            sampler_hash[slot] = r.sampler[slot] ? SlotHash(reinterpret_cast<const void*>(r.sampler[slot]), 16) : 0;
-        }
-        SlotMap& map = slot_maps[{p.program, 0}];
-        for (u32 k = 0; k < p.num_images; ++k) {
-            const u32 hash = SlotHash(&p.image_sharps[k], sizeof(AmdGpu::Image));
-            std::bitset<StageTextureSlots> candidates;
-            for (u32 slot = 0; slot < StageTextureSlots; ++slot) {
-                candidates[slot] = texture_hash[slot] == hash;
-            }
-            ++resources.read[Texture];
-            resources.found[Texture] += candidates.any();
-            Narrow(map.images, k, candidates, map.started);
-        }
-        for (u32 k = 0; k < p.num_samplers; ++k) {
-            const u32 hash = SlotHash(&p.sampler_sharps[k], 16);
-            std::bitset<16> candidates;
-            for (u32 slot = 0; slot < 16; ++slot) {
-                candidates[slot] = sampler_hash[slot] == hash;
-            }
-            ++resources.read[Sampler];
-            resources.found[Sampler] += candidates.any();
-            Narrow(map.samplers, k, candidates, map.started);
-        }
-        ++map.draws;
-        if (flat_mode != FlatOff && p.program && p.flat) {
-            const auto& buffers = p.program->info.buffers;
-            map.buffer_raw.resize(buffers.size());
-            map.buffer_raw_known.resize(buffers.size());
-            for (u32 k = 0; k < buffers.size() && k < p.num_buffers; ++k) {
-                if (map.buffer_raw_known[k]) {
-                    continue;
-                }
-                const auto& fetch = buffers[k].sharp_fetch;
-                bool ok = true;
-                for (u32 i = 0; i < 4; ++i) {
-                    const bool loaded = (fetch.load_mask >> i) & 1;
-                    ok = ok && (!loaded || fetch.offsets[i] < p.flat_size);
-                    map.buffer_raw[k][i] = loaded && ok ? p.flat[fetch.offsets[i]] : fetch.immediates[i];
-                }
-                map.buffer_raw_known[k] = ok;
-            }
-        }
-        for (u32 k = 0; k < p.num_buffers; ++k) {
-            const AmdGpu::Buffer& sharp = p.buffer_sharps[k];
-            std::bitset<14> candidates;
-            if (sharp.base_address == 1 && sharp.num_records == 0) {
-                candidates.set(); // shadPS4's null buffer, not a resource of the game's
-            } else {
-                for (u32 slot = 0; slot < 14; ++slot) {
-                    candidates[slot] = r.constant_buffer_address[slot] == sharp.base_address &&
-                                       (r.constant_buffer_size[slot] + 15) / 16 == sharp.num_records;
-                }
-                ++resources.read[ConstantBuffer];
-                resources.found[ConstantBuffer] += candidates.any();
-            }
-            Narrow(map.buffers, k, candidates, map.started);
-        }
-        map.started = true;
-        if (take_mesh_draws && d.mesh) {
-            TakeResources(p, r, map);
-        }
+        LearnStage(p, d, s);
     }
     if (prepared->vertex.valid && vertex_stage) {
         // One V# per attribute: a slot's address plus the attribute's offset, with the slot's stride.
@@ -903,7 +1021,7 @@ Candidates CandidatesOf(const std::bitset<N>& bits) {
 
 struct Plan {
     std::vector<Candidates> images, samplers;
-    std::vector<std::bitset<14>> buffers; // all bits: the null buffer
+    std::vector<std::bitset<BufferSlots>> buffers; // all bits: the null buffer
     std::vector<std::array<u32, 4>> buffer_raw;
 };
 using Plans = std::unordered_map<const void*, Plan>;
@@ -916,6 +1034,16 @@ struct FlatTally {
 // The GPU thread's record of the draw it is drawing (ObserveDraw, flat mode).
 Record gpu_record;
 bool gpu_has_record = false;
+
+// Buffer candidates that are all writable resources: the object holds the whole V#.
+bool WritableOnly(const std::bitset<BufferSlots>& bits) {
+    for (u32 c = 0; c < ConstantBufferSlots; ++c) {
+        if (bits[c]) {
+            return false;
+        }
+    }
+    return bits.any();
+}
 
 void PublishPlans() {
     auto plans = std::make_shared<Plans>();
@@ -934,7 +1062,7 @@ void PublishPlans() {
         for (u32 k = 0; k < map.buffers.size(); ++k) {
             const auto& bits = map.buffers[k];
             const bool known = k < map.buffer_raw_known.size() && map.buffer_raw_known[k];
-            complete = complete && (bits.all() || (bits.any() && known));
+            complete = complete && (bits.all() || (bits.any() && (known || WritableOnly(bits))));
             plan.buffer_raw.push_back(known ? map.buffer_raw[k] : std::array<u32, 4>{});
         }
         for (const auto& bits : map.images) {
@@ -1027,6 +1155,10 @@ bool FillFrom(const Plan& plan, const Record::Resources& r, const Shader::Info& 
     for (u32 k = 0; k < info.images.size(); ++k) {
         std::array<u32, 8> dwords;
         const auto texture = [&](u32 slot) {
+            if (slot >= StageTextureSlots) {
+                const u64 object = r.writable[slot - StageTextureSlots];
+                return object ? object + WritableSharp : 0;
+            }
             return slot < r.textures && r.texture[slot] ? r.texture[slot] + TextureSharp : 0;
         };
         if (!AgreedSharp(plan.images[k], texture, dwords) || !Place(info.images[k].sharp_fetch, dwords, flat)) {
@@ -1045,9 +1177,38 @@ bool FillFrom(const Plan& plan, const Record::Resources& r, const Shader::Info& 
         if (info.buffers[k].IsSpecial() || bits.all()) {
             continue; // the renderer's own buffer, or the null buffer: nothing loaded for it
         }
-        // Every candidate slot with the same address and size.
+        if (WritableOnly(bits)) { // every candidate object with the same V#
+            std::array<u32, 4> dwords;
+            bool found = false;
+            for (u32 w = 0; w < WritableSlots; ++w) {
+                if (!bits[ConstantBufferSlots + w]) {
+                    continue;
+                }
+                if (!r.writable[w]) {
+                    return false;
+                }
+                std::array<u32, 4> v;
+                std::memcpy(v.data(), reinterpret_cast<const void*>(r.writable[w] + WritableSharp), sizeof(v));
+                if (found && v != dwords) {
+                    return false;
+                }
+                dwords = v;
+                found = true;
+            }
+            if (!Place(info.buffers[k].sharp_fetch, dwords, flat)) {
+                return false;
+            }
+            continue;
+        }
+        // Every candidate slot with the same address and size (a constant buffer and a writable
+        // resource both: the walker decides).
+        for (u32 w = 0; w < WritableSlots; ++w) {
+            if (bits[ConstantBufferSlots + w]) {
+                return false;
+            }
+        }
         s32 slot = -1;
-        for (u32 c = 0; c < 14; ++c) {
+        for (u32 c = 0; c < ConstantBufferSlots; ++c) {
             if (!bits[c]) {
                 continue;
             }
@@ -1105,6 +1266,29 @@ void Report(u64 now) {
                     static_cast<unsigned long long>(flat_tally.gpu_filled.load()),
                     static_cast<unsigned long long>(flat_tally.gpu_failed.load()));
     }
+    std::printf("Render boundary: compute: commitCompute %llu, dispatches tagged %llu, libGnm dispatches without "
+                "a compute state %llu; dispatch packets %llu, with a record %llu; stages %llu, from the compute "
+                "state %llu, without a plan %llu, a resource without a sharp %llu; sharps compared %llu, "
+                "differing %llu; without a record: walking tables %llu, registers only %llu\n",
+                static_cast<unsigned long long>(compute_calls.load()),
+                static_cast<unsigned long long>(dispatches_filed.load()),
+                static_cast<unsigned long long>(gnm_dispatch_without_state.load()),
+                static_cast<unsigned long long>(compute_tally.packets),
+                static_cast<unsigned long long>(compute_tally.found),
+                static_cast<unsigned long long>(compute_tally.stages),
+                static_cast<unsigned long long>(compute_tally.filled),
+                static_cast<unsigned long long>(compute_tally.no_plan),
+                static_cast<unsigned long long>(compute_tally.failed),
+                static_cast<unsigned long long>(compute_tally.sharps),
+                static_cast<unsigned long long>(compute_tally.differed),
+                static_cast<unsigned long long>(compute_tally.unrecorded_tables),
+                static_cast<unsigned long long>(compute_tally.unrecorded_registers));
+    std::printf("Render boundary: dispatches without a compute state from");
+    for (u32 i = 0; i < DispatchSites && dispatch_site[i].load(); ++i) {
+        std::printf(" %#llx %llu", static_cast<unsigned long long>(dispatch_site[i].load()),
+                    static_cast<unsigned long long>(dispatch_site_calls[i].load()));
+    }
+    std::printf("\n");
     std::printf("Render boundary: method calls");
     for (u32 m = 0; m < Methods; ++m) {
         std::printf(" %s %llu", method_names[m], static_cast<unsigned long long>(method_calls[m].load()));
@@ -1162,7 +1346,8 @@ void WorkerNoteTag(const void* nop) {
 void WorkerDraw(const void* packet) {
     // N2.4: every method draw with a record, not only mesh draws (the plans are learnt from all of
     // them, and the GPU thread's check holds for all).
-    worker_has_record = packet == worker_tag_next && Find(worker_tag_number, worker_record);
+    worker_has_record =
+        packet == worker_tag_next && Find(worker_tag_number, worker_record) && !worker_record.compute;
 }
 
 bool WorkerFlat(const void* program, Shader::Info& info, Shader::HwStage stage) {
@@ -1199,6 +1384,8 @@ bool GpuFlat(const void* program, Shader::Info& info, Shader::HwStage stage) {
     return true;
 }
 
+std::pair<u64, u64> CompareSharps(Shader::Info& info, std::vector<u32>& filled);
+
 void WorkerCheckFlat(const void* program, Shader::Info& info, Shader::HwStage stage) {
     if (flat_mode != FlatCheck) {
         return;
@@ -1221,6 +1408,22 @@ void WorkerCheckFlat(const void* program, Shader::Info& info, Shader::HwStage st
     }
     flat_tally.filled.fetch_add(1, std::memory_order_relaxed);
     // The sharps each buffer gives, as the shader and PrepareResources read them.
+    const auto [compared, differed] = CompareSharps(info, filled);
+    flat_tally.sharps.fetch_add(compared, std::memory_order_relaxed);
+    flat_tally.differed.fetch_add(differed, std::memory_order_relaxed);
+}
+
+// ---- N2.4: compute passes, on the GPU thread (dispatches are prepared there) ----
+
+void ObserveDispatch(const void* packet) {
+    ++compute_tally.packets;
+    gpu_compute_has_record = packet == tag_next && Find(tag_number, gpu_compute_record) && gpu_compute_record.compute;
+    compute_tally.found += gpu_compute_has_record;
+}
+
+// The sharps `info`'s resources give from its flattened user data and from `filled`: how many
+// were compared and how many differ.
+std::pair<u64, u64> CompareSharps(Shader::Info& info, std::vector<u32>& filled) {
     u64 compared = 0, differed = 0;
     auto check = [&](const auto& list) {
         for (const auto& res : list) {
@@ -1235,8 +1438,83 @@ void WorkerCheckFlat(const void* program, Shader::Info& info, Shader::HwStage st
     check(info.images);
     check(info.samplers);
     check(info.buffers);
-    flat_tally.sharps.fetch_add(compared, std::memory_order_relaxed);
-    flat_tally.differed.fetch_add(differed, std::memory_order_relaxed);
+    return {compared, differed};
+}
+
+bool GpuComputeFlat(const void* program, Shader::Info& info, Shader::HwStage stage) {
+    if (flat_mode != FlatFill || stage != Shader::HwStage::Compute || !gpu_compute_has_record) {
+        return false;
+    }
+    ++compute_tally.stages;
+    const Plan* plan = WorkerPlan(program);
+    if (!plan) {
+        ++compute_tally.no_plan;
+        return false;
+    }
+    if (!FillFrom(*plan, gpu_compute_record.stage[0], info, info.flattened_ud_buf)) {
+        ++compute_tally.failed;
+        return false;
+    }
+    ++compute_tally.filled;
+    return true;
+}
+
+void LearnCompute(const void* program, Shader::Info& info, Shader::HwStage stage) {
+    if (stage != Shader::HwStage::Compute) {
+        return;
+    }
+    if (!gpu_compute_has_record) {
+        ++(info.srt_info.walker_func ? compute_tally.unrecorded_tables : compute_tally.unrecorded_registers);
+        return;
+    }
+    const Plan* plan = flat_mode != FlatOff ? WorkerPlan(program) : nullptr;
+    if (flat_mode == FlatCheck) {
+        ++compute_tally.stages;
+        if (!plan) {
+            ++compute_tally.no_plan;
+        } else {
+            thread_local std::vector<u32> filled;
+            if (!FillFrom(*plan, gpu_compute_record.stage[0], info, filled)) {
+                ++compute_tally.failed;
+            } else {
+                ++compute_tally.filled;
+                const auto [compared, differed] = CompareSharps(info, filled);
+                compute_tally.sharps += compared;
+                compute_tally.differed += differed;
+            }
+        }
+    }
+    if (plan) {
+        return; // learnt
+    }
+    // The walker's sharps, as PrepareResources reads them for a draw.
+    thread_local std::vector<AmdGpu::Image> images;
+    thread_local std::vector<AmdGpu::Sampler> samplers;
+    thread_local std::vector<AmdGpu::Buffer> buffers;
+    images.clear();
+    samplers.clear();
+    buffers.clear();
+    for (const auto& res : info.images) {
+        images.push_back(res.GetSharp(info));
+    }
+    for (const auto& res : info.samplers) {
+        samplers.push_back(res.GetSharp(info));
+    }
+    for (const auto& res : info.buffers) {
+        buffers.push_back(res.IsSpecial() ? AmdGpu::Buffer::Null() : res.GetSharp(info));
+    }
+    Vulkan::PreparedStage p{};
+    p.program = static_cast<const Vulkan::Program*>(program);
+    p.hw_stage = stage;
+    p.flat = info.flattened_ud_buf.data();
+    p.flat_size = u32(info.flattened_ud_buf.size());
+    p.image_sharps = images.data();
+    p.sampler_sharps = samplers.data();
+    p.buffer_sharps = buffers.data();
+    p.num_images = u32(images.size());
+    p.num_samplers = u32(samplers.size());
+    p.num_buffers = u32(buffers.size());
+    LearnStage(p, gpu_compute_record, 0);
 }
 
 void NoteTag(const void* nop) {
@@ -1247,7 +1525,7 @@ void NoteTag(const void* nop) {
 void ObserveDraw(const void* packet, const AmdGpu::Regs& regs, bool indexed, u32 index_offset, bool indirect,
                  const Vulkan::PreparedDraw* prepared, u64 reg_checksum) {
     Record d;
-    const bool found = packet == tag_next && Find(tag_number, d);
+    const bool found = packet == tag_next && Find(tag_number, d) && !d.compute;
     if (flat_mode == FlatFill) {
         gpu_has_record = found;
         if (gpu_has_record) {
@@ -1347,6 +1625,12 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     }
     for (const u64 offset : gnm_offsets) {
         installed += install(offset, GnmTag, OnGnmDraw);
+        ++wanted;
+    }
+    installed += install(CommitCompute, ComputeTag, OnCompute);
+    ++wanted;
+    for (const u64 offset : gnm_dispatch_offsets) {
+        installed += install(offset, GnmDispatchTag, OnGnmDispatch);
         ++wanted;
     }
     observing = installed == wanted;

@@ -1908,6 +1908,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 if (!rasterizer || (cs_program.dispatch_initiator & 1) == 0) {
                     break;
                 }
+                if (BbRenderBoundary::Observing()) {
+                    BbRenderBoundary::ObserveDispatch(header);
+                }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 rasterizer->ScopeMarker("gfx:{}:DispatchDirect", fmt::make_format_args(cmd_address),
                                         [&] { rasterizer->DispatchDirect(); });
@@ -1928,6 +1931,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 }
                 if (!rasterizer || (cs_program.dispatch_initiator & 1) == 0) {
                     break;
+                }
+                if (BbRenderBoundary::Observing()) {
+                    BbRenderBoundary::ObserveDispatch(header);
                 }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 rasterizer->ScopeMarker(

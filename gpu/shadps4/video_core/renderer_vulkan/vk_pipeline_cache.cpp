@@ -1387,7 +1387,12 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     auto& info = program->info;
     info.pgm_base = params.Base(); // Needs to be actualized for inline cbuffer address fixup
     info.user_data = params.user_data;
-    info.RefreshFlatBuf();
+    // N2.4: a compute pass's flattened user data from the engine's compute state
+    // (BB_RENDER_BOUNDARY=flat), or the walker, which teaches the boundary the program's slots.
+    if (!BbRenderBoundary::GpuComputeFlat(program.get(), info, hw_stage)) {
+        info.RefreshFlatBuf();
+        BbRenderBoundary::LearnCompute(program.get(), info, hw_stage);
+    }
     auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
 
     size_t perm_idx = program->modules.size();
