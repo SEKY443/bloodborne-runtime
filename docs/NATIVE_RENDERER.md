@@ -312,7 +312,11 @@ The steps:
   enter stay recompiled (bloodborne-recomp's loader keeps a function whose only change is a hook at
   its entry), programs with a plan stop learning slots, records copy only each stage's used
   texture slots (a whole record is 7 KB), and plans hold each resource's candidate slots as a
-  list. The rest (42 points) must go before drawing from the engine can be the default.
+  list. The rest (42 points) is the GPU command thread's time: 6.1 µs a draw against 4.3 without
+  the boundary, so the GPU waits for work more often and the recorder submits about 10% more
+  (430 a second against 392). It is neither the draw checks nor the record copies (each measured
+  without a change): it is reading each record, written on a game thread, on another core. It must
+  go before drawing from the engine can be the default.
 
 N2.3's worth is the step N2.5 needs: mesh shaders' resources come from the draw state, not from
 the PS4 user data.
