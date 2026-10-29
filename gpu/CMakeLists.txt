@@ -1,11 +1,6 @@
 # bbport GPU library: shadPS4 video core + shader recompiler + Gnm/VideoOut
 # drivers, adapted to the native_probe runtime through shims in shim/.
 cmake_minimum_required(VERSION 3.24)
-# ctest, for a standalone build of this project; runtime/CMakeLists.txt (which includes it) does it
-# for the game.
-if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    include(CTest)
-endif()
 # Where the library goes: runtime/CMakeLists.txt points this at its build directory's gpu/, and a
 # standalone build of this project does the same.
 if (NOT BB_GPU_OUT)
@@ -23,6 +18,11 @@ if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
     set(CMAKE_OSX_DEPLOYMENT_TARGET 15.0)
 endif()
 project(bbgpu LANGUAGES C CXX)
+# ctest (after project(), which CMake requires), for a standalone build of this project; runtime/CMakeLists.txt (which includes it) does it
+# for the game.
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    include(CTest)
+endif()
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
