@@ -31,10 +31,10 @@ steps.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 80% `████████████████░░░░` | N0, N1, N4, N5 and N6 done; N2 at 65% (N2.3 done, N2.4 begun: the draw methods' draws from the draw state, opt-in) |
+| **R5 · native renderer** | 80% `████████████████░░░░` | N0, N1, N4, N5 and N6 done; N2 at 70% (N2.3 done; N2.4: the draw methods' draws and most compute passes from the engine's state, opt-in) |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
-| N2 · shaders from the draw state, then ahead of time | 65% `█████████████░░░░░░░` | 3 of 5 steps and a quarter of N2.4: the plan, the inventory, every draw method's draws from the draw state (opt-in). Next: the rest of N2.4 (compute passes, render-target passes, Scaleform) and the shaders ahead of time (N2.5) |
+| N2 · shaders from the draw state, then ahead of time | 70% `██████████████░░░░░░` | 3 of 5 steps and nearly half of N2.4: the plan, the inventory, every draw method's draws and most compute passes from the engine's state (opt-in). Next: the rest of N2.4 (surface operations that walk tables, render-target passes, Scaleform) and the shaders ahead of time (N2.5) |
 | N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N2. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 100% `████████████████████` | Accepted (the maintainer, 2026-10-29): M1–M4, native Metal the default since 0.9.0 RC 1 |
@@ -244,7 +244,7 @@ the test save, translator, no faults):
 | N2.1 · the plan | 100% `████████████████████` | This section |
 | N2.2 · the inventory | 100% `████████████████████` | The shaders use the user data only to locate their resources (below) |
 | N2.3 · mesh draws from the draw state | 100% `████████████████████` | Done, opt-in (`BB_RENDER_BOUNDARY=flat`): mesh draws' flattened user data from the draw state on the workers and the GPU thread, without the walker; exact; the observer still costs 42 CPU points ([below](#n23s-design-the-flat-buffer-from-the-draw-state)) |
-| N2.4 · the other draw kinds | 25% `█████░░░░░░░░░░░░░░░` | The draw methods' other draws: done, with mesh draws under `flat` (88% of the shader stages of prepared draws; tessellated and geometry-shaded draws keep the walker). Next: the compute passes, render-target passes and Scaleform, each from its own boundary, or left to the packet path |
+| N2.4 · the other draw kinds | 45% `█████████░░░░░░░░░░░` | The draw methods' other draws: done (88% of the shader stages of prepared draws). Compute passes: 79% of dispatch stages without the walker ([below](#n24-compute-passes)). Next: the surface operations that walk tables, the render-target passes and Scaleform |
 | N2.5 · ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | The shaders converted once on the player's machine, keyed by the game's shader code, so none is compiled during play |
 
 ### The inventory (N2.2)
@@ -323,6 +323,27 @@ The steps:
 
 N2.3's worth is the step N2.5 needs: mesh shaders' resources come from the draw state, not from
 the PS4 user data.
+
+### N2.4: compute passes
+
+Two kinds of dispatch reach libGnm (counted with `BB_RENDER_BOUNDARY=flat-check`, Cathedral Ward):
+
+- **Through the resource binder (7%):** `CG::GraphicsContext::dispatch` and others call
+  `CG::ResourceBinder::commitCompute` with a compute state, which holds one shader stage laid
+  out as a draw stage and 8 writable resources (recomp's `annotations/structs.h`:
+  `CgComputeState`). An entry hook there reads them into a record, libGnm's `dispatch` and
+  `dispatchIndirect` file it and tag the packet, and the GPU thread, which prepares dispatches,
+  learns each compute program's slots from the walker and then fills it from the record
+  (`GpuComputeFlat`). Exact: 3,514 sharps compared, 0 differing. A tenth of these dispatch
+  stages are filled so far; the rest are programs with a buffer that matches no slot yet (8
+  buffers), which keep the walker.
+- **The surface operations (93%):** `CG::SurfaceOps`' copies, fills and clears set their sharps
+  in user data themselves and dispatch directly, with no compute state. 84% of their dispatch
+  stages read every sharp from the user-data registers, which are already what the engine set:
+  no walker runs and no boundary is needed. The other 16% walk resource tables.
+
+So 79% of dispatch stages run without the walker; the surface operations that walk tables and the
+buffers without a slot are what is left.
 
 ### What N2 builds on
 
