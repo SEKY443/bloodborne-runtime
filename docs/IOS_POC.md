@@ -1,9 +1,10 @@
 # iOS proof of concept
 
-Branch `ios-poc` (this repository and bloodborne-recomp). Bloodborne running on an iPhone 17 Pro
+On `main` since 2026-10-29 (merged from the `ios-poc` branches of this repository and
+bloodborne-recomp; the iOS code behind `TARGET_OS_IPHONE`). Bloodborne running on an iPhone 17 Pro
 Max: the runtime, bbcpu and the recompiled library, the Metal renderer, signed with a free Apple
-ID. A proof of concept, not a release: nothing here is packaged or distributed, and the branch is
-not merged. How the work is meant to be split between this repository and a future app
+ID. A proof of concept, not a release: nothing here is packaged or distributed; the app is the
+private bloodborne-ios repository. How the work is meant to be split between this repository and a future app
 repository: bloodborne-mac's `docs/ARCHITECTURE.md` ("Where code lives").
 
 ## Where it stands
