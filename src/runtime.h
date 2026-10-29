@@ -23,6 +23,10 @@ typedef void (ABI *GuestCallback)(void);
 uint64_t runtime_guest_call(const void *fn, int count, const uint64_t *args);
 void runtime_start(uint64_t capabilities);
 uintptr_t runtime_resolve(const char *name, int is_data);
+/* A host version of an import the loader would bind to a linked module's export at `native`
+ * (image address): a few C library functions the host serves from what that code holds. 0: bind
+ * the export. */
+uintptr_t runtime_resolve_native(const char *name, int is_data, uintptr_t native);
 void runtime_report(void);
 void runtime_finalize(void *dso);
 uintptr_t runtime_mutex_resolve(const char *name);

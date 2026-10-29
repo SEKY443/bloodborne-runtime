@@ -48,7 +48,11 @@ upscalers are for outputs above 1080p, where native resolution needs too much me
   is done; its CPU work continues (bloodborne-recomp's RECOMPILATION.md, "Where the CPU time
   goes"). Six more C library calls on the host (`strncmp`, `strchr`, `strstr`, `exp2f`, `wcschr`,
   `wcscmp`) and recomp's jump tables across blocks: calls into the translator 69,600 a second to
-  40,300, the library's CPU time 342% to 339% in Cathedral Ward.
+  40,300, the library's CPU time 342% to 339% in Cathedral Ward. Then 99 more jump tables, the C
+  library's character tables (`_Getpctype` and the two case tables, read from libc.prx's own
+  `lea rax, [rip + table]; ret`), `fmodf`, `wcsrchr` and `atanf` on the host: 9,400 a second,
+  nearly all the game's operator new and delete (its own heap); CPU time measured with the
+  host-call path change that follows.
 - **The renderer's GPU thread** records a draw in about 4.0–4.4 µs on Metal.
 - **The renderer's threads on native Metal** (Cathedral Ward, translated, 39 FPS; a 5-second
   macOS sample, `SAMPLE=1`, read with `tools/sample_split.py`): recording into Metal (`DrawRec`

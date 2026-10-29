@@ -670,7 +670,8 @@ int main(int argc, char **argv) {
             else if (native_libc && bindings[relocs[i].value]) {
                 uint64_t address=bindings[relocs[i].value];
                 if (binding_kinds[relocs[i].value]!=relocs[i].kind || !mapped(segments,ns,address,relocs[i].addend+1)) fail("native export kind/range mismatch");
-                value=(uintptr_t)image+address+relocs[i].addend;
+                const uintptr_t host=runtime_resolve_native(names[relocs[i].value],relocs[i].kind==2,(uintptr_t)image+address);
+                value=(host ? host : (uintptr_t)image+address)+relocs[i].addend;
             }
         }
         memcpy(image + relocs[i].target, &value, 8);

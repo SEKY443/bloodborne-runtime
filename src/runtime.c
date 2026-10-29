@@ -236,6 +236,8 @@ static ABI int guest_strncmp(const char *a, const char *b, size_t size) { return
 static ABI char *guest_strchr(const char *text, int c) { return strchr(text, c); }
 static ABI char *guest_strstr(const char *text, const char *part) { return strstr(text, part); }
 static ABI float guest_exp2f(float x) { return exp2f(x); }
+static ABI float guest_fmodf(float x, float y) { return fmodf(x, y); }
+static ABI float guest_atanf(float x) { return atanf(x); }
 static ABI ldiv_t guest_ldiv(long a, long b) { return ldiv(a, b); }
 static ABI float guest_powf(float x, float y) { return powf(x, y); }
 static ABI float guest_modff(float x, float *integral) { return modff(x, integral); }
@@ -254,6 +256,13 @@ static ABI uint16_t *guest_wcschr(const uint16_t *text, unsigned c) {
     for (;; ++text) {
         if (*text == (uint16_t)c) return (uint16_t *)text;
         if (!*text) return NULL;
+    }
+}
+static ABI uint16_t *guest_wcsrchr(const uint16_t *text, unsigned c) {
+    const uint16_t *found = NULL;
+    for (;; ++text) {
+        if (*text == (uint16_t)c) found = text;
+        if (!*text) return (uint16_t *)found;
     }
 }
 static ABI int guest_wcscmp(const uint16_t *a, const uint16_t *b) {
@@ -290,6 +299,35 @@ static ABI __attribute__((noreturn)) void guest_libc_exit(int status) {
     exit(status);
 #endif
 }
+/* The C library's character tables: _Getpctype, _Getptolower and _Getptoupper are
+ * `lea rax, [rip + table]; ret` in libc.prx (its locale is "C" only: setlocale takes nothing
+ * else), and the game calls the first 16,000 times a second (isalpha and the like), each a run of
+ * the translator from the recompiled library. The table's address is read from that code when
+ * the import is bound; the host versions return it. Code of another shape keeps the library's. */
+static const void *ctype_tables[3];
+static ABI const void *guest_Getpctype(void) { return ctype_tables[0]; }
+static ABI const void *guest_Getptolower(void) { return ctype_tables[1]; }
+static ABI const void *guest_Getptoupper(void) { return ctype_tables[2]; }
+static const void *lea_rip_ret_target(uintptr_t code) {
+    const uint8_t *p = (const uint8_t *)code;
+    if (p[0] != 0x48 || p[1] != 0x8d || p[2] != 0x05 || p[7] != 0xc3) return NULL;
+    int32_t disp;
+    memcpy(&disp, p + 3, 4);
+    return (const void *)(code + 7 + (uintptr_t)(intptr_t)disp);
+}
+uintptr_t runtime_resolve_native(const char *name, int is_data, uintptr_t native) {
+    static const struct { const char *nid; int slot; } tables[] = {
+        {"sUP1hBaouOw#q#q", 0}, {"1uJgoVq3bQU#q#q", 1}, {"rcQCUr0EaRU#q#q", 2}};
+    if (is_data || !native || !(capabilities & 1)) return 0;
+    for (size_t i = 0; i < sizeof(tables) / sizeof(tables[0]); ++i) {
+        if (strcmp(name, tables[i].nid)) continue;
+        const void *table = lea_rip_ret_target(native);
+        if (!table) return 0;
+        ctype_tables[tables[i].slot] = table;
+        return (uintptr_t)(tables[i].slot == 0 ? guest_Getpctype : tables[i].slot == 1 ? guest_Getptolower : guest_Getptoupper);
+    }
+    return 0;
+}
 uintptr_t runtime_resolve(const char *name, int is_data) {
     if (!(capabilities & 1)) return 0;
     if (is_data) {
@@ -318,6 +356,9 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
     if (!strcmp(name, "ob5xAW4ln-0#q#q")) return (uintptr_t)guest_strchr;
     if (!strcmp(name, "viiwFMaNamA#q#q")) return (uintptr_t)guest_strstr;
     if (!strcmp(name, "wuAQt-j+p4o#q#q")) return (uintptr_t)guest_exp2f;
+    if (!strcmp(name, "88Vv-AzHVj8#q#q")) return (uintptr_t)guest_fmodf;
+    if (!strcmp(name, "weDug8QD-lE#q#q")) return (uintptr_t)guest_atanf;
+    if (!strcmp(name, "g3ShSirD50I#q#q")) return (uintptr_t)guest_wcsrchr;
     if (!strcmp(name, "Ezzq78ZgHPs#q#q")) return (uintptr_t)guest_wcschr;
     if (!strcmp(name, "pNtJdE3x49E#q#q")) return (uintptr_t)guest_wcscmp;
     if (!strcmp(name, "gfP0im5Z3g0#q#q")) return (uintptr_t)guest_ldiv;
