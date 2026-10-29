@@ -44,8 +44,7 @@ steps.
 In this order (the app's roadmap):
 
 1. **N5 acceptance (now).** The maintainer's play sessions passed. Acceptance waits for:
-   - players' reports on the 0.9.0 release candidates (RC 1: native Metal by default; RC 2:
-     online and the save editor);
+   - players' reports on the 0.9.x releases (native Metal the default since 0.9.0 RC 1);
    - the start-up capability comparison on M1 and M2 Macs (`BB_METAL_CAPS=compare` logs every
      difference between the Metal backend's answers and MoltenVK's; `BB_METAL_CAPS=moltenvk`
      uses MoltenVK's). On the M3 Pro it finds 0 differences.

@@ -12,7 +12,7 @@ steps are kept in [Native renderer](NATIVE_RENDERER.md#progress); this page is t
 Silicon the Metal backend is the default and owns its device, queue, resources, synchronization,
 presentation and MetalFX without linking or loading the Vulkan loader or MoltenVK. M4 is **not
 accepted** yet: the maintainer's play sessions passed; acceptance waits for players' reports on
-the 0.9.0 release candidates and the start-up capability comparisons on M1 and M2 Macs
+the 0.9.x releases and the start-up capability comparisons on M1 and M2 Macs
 (`BB_METAL_CAPS=compare`). Until then MoltenVK stays selectable (`BB_METAL_FRAME=0`); only that
 path loads the Vulkan loader and its driver. Linux keeps the Vulkan backend.
 
