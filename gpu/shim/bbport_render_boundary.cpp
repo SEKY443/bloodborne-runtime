@@ -887,9 +887,22 @@ void ReportSlotMaps() {
 // default samplers) is filled only while its candidates still agree: the right slot is always
 // among them, so then any gives its sharp.
 constexpr u64 PlanDraws = 256;
+// Candidate slots by resource, as lists (usually one slot: testing all 128 bits of every image
+// of every draw was the fill's main cost).
+using Candidates = std::vector<u8>;
+template <std::size_t N>
+Candidates CandidatesOf(const std::bitset<N>& bits) {
+    Candidates slots;
+    for (u32 i = 0; i < N; ++i) {
+        if (bits[i]) {
+            slots.push_back(u8(i));
+        }
+    }
+    return slots;
+}
+
 struct Plan {
-    std::vector<std::bitset<StageTextureSlots>> images;
-    std::vector<std::bitset<16>> samplers;
+    std::vector<Candidates> images, samplers;
     std::vector<std::bitset<14>> buffers; // all bits: the null buffer
     std::vector<std::array<u32, 4>> buffer_raw;
 };
@@ -924,8 +937,12 @@ void PublishPlans() {
             complete = complete && (bits.all() || (bits.any() && known));
             plan.buffer_raw.push_back(known ? map.buffer_raw[k] : std::array<u32, 4>{});
         }
-        plan.images = map.images;
-        plan.samplers = map.samplers;
+        for (const auto& bits : map.images) {
+            plan.images.push_back(CandidatesOf(bits));
+        }
+        for (const auto& bits : map.samplers) {
+            plan.samplers.push_back(CandidatesOf(bits));
+        }
         plan.buffers = map.buffers;
         if (complete) {
             plans->emplace(key.first, std::move(plan));
@@ -977,13 +994,10 @@ bool Place(const Shader::SharpFetch<T>& fetch, const std::array<u32, N>& dwords,
 // each resource's sharp at its offsets. False when a resource has no sharp there.
 // The sharp of a resource with candidate slots `bits`, if every candidate holds the same one
 // (`read` gives a slot's object address, or 0 for an empty slot).
-template <std::size_t Bits, std::size_t Dwords>
-bool AgreedSharp(const std::bitset<Bits>& bits, auto read, std::array<u32, Dwords>& out) {
+template <std::size_t Dwords>
+bool AgreedSharp(const Candidates& slots, auto read, std::array<u32, Dwords>& out) {
     bool found = false;
-    for (u32 slot = 0; slot < Bits; ++slot) {
-        if (!bits[slot]) {
-            continue;
-        }
+    for (const u8 slot : slots) {
         const u64 address = read(slot);
         if (!address) {
             return false;
