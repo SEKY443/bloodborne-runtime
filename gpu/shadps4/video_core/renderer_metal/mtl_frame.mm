@@ -931,9 +931,13 @@ bool MakeView(VkImageView view, const VkImageViewCreateInfo* info) {
         pixel_format = base.pixelFormat;
         if (range.aspectMask == VK_IMAGE_ASPECT_STENCIL_BIT &&
             VkToMtl::IsDepthPixelFormat(u32(base.pixelFormat))) {
+#if TARGET_OS_IPHONE
+            pixel_format = MTLPixelFormatX32_Stencil8; // iOS: 32-bit depth only
+#else
             pixel_format = base.pixelFormat == MTLPixelFormatDepth32Float_Stencil8
                                ? MTLPixelFormatX32_Stencil8
                                : MTLPixelFormatX24_Stencil8;
+#endif
         }
     }
     const NSUInteger levels = range.levelCount == VK_REMAINING_MIP_LEVELS

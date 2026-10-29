@@ -47,7 +47,10 @@
 
 #if defined(__APPLE__)
 #include <mach/mach.h>
+#include <TargetConditionals.h>
+#if !TARGET_OS_IPHONE
 #include <mach/mach_vm.h>
+#endif
 #else
 #include <sys/uio.h>
 #include <unistd.h>
@@ -91,10 +94,17 @@ bool Read(Addr address, void* out, std::size_t size) {
         return false;
     }
 #if defined(__APPLE__)
+#if TARGET_OS_IPHONE // no mach_vm.h; vm_* take 64-bit addresses on arm64
+    vm_size_t got = 0;
+    return vm_read_overwrite(mach_task_self(), address, size, reinterpret_cast<vm_address_t>(out), &got) ==
+               KERN_SUCCESS &&
+           got == size;
+#else
     mach_vm_size_t got = 0;
     return mach_vm_read_overwrite(mach_task_self(), address, size, reinterpret_cast<mach_vm_address_t>(out),
                                   &got) == KERN_SUCCESS &&
            got == size;
+#endif
 #else
     iovec local{out, size}, remote{reinterpret_cast<void*>(address), size};
     return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == ssize_t(size);

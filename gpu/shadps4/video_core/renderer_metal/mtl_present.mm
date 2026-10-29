@@ -21,7 +21,9 @@ void Configure(void* layer_ptr, const LayerConfig& config) {
     // Presents copy into the drawable (a blit), so its texture is not framebuffer-only.
     layer.framebufferOnly = NO;
     layer.maximumDrawableCount = std::clamp<NSUInteger>(config.max_drawables, 2, 3);
+#if !TARGET_OS_IPHONE // iOS always syncs to the display
     layer.displaySyncEnabled = config.display_sync;
+#endif
     layer.opaque = YES;
     CGColorSpaceRef space = CGColorSpaceCreateWithName(
         config.hdr ? kCGColorSpaceITUR_2100_PQ : kCGColorSpaceSRGB);

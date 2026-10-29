@@ -117,6 +117,11 @@ static void protect(void *p, size_t size, unsigned flags) {
     FlushInstructionCache(GetCurrentProcess(), p, size);
 #else
     int mode = ((flags & 4) ? PROT_READ : 0) | ((flags & 2) ? PROT_WRITE : 0) | ((flags & 1) ? PROT_EXEC : 0);
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    /* iOS (proof of concept): the game's code never runs natively (bbcpu and the recompiled
+     * library), and iOS refuses execute on pages written after they were executable. */
+    if (flags & 1) mode = (mode & ~PROT_EXEC) | PROT_READ;
+#endif
     if (mprotect(p, size, mode)) fail("mprotect failed");
 #endif
 }
@@ -631,6 +636,7 @@ int main(int argc, char **argv) {
     runtime_native_load(bb_image_base);
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
     fclose(f);
+    runtime_game_lock_load(bb_image_base);
     if (!cpu_only) {
         char title[128]="Bloodborne", serial[16]="UNKNOWN", sfo[4096];
         uint32_t attributes=0;
@@ -714,6 +720,7 @@ int main(int argc, char **argv) {
         pthread_t thread;
         pthread_attr_init(&attributes);
         pthread_attr_setstacksize(&attributes,8*1024*1024);
+        bb_thread_qos(&attributes);
         if (pthread_create(&thread,&attributes,game_thread,NULL)) fail("cannot start the game thread");
         pthread_attr_destroy(&attributes);
         bbgpu_window_loop();

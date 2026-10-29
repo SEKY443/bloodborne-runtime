@@ -424,7 +424,9 @@ bool IsDepthPixelFormat(u32 format) {
     switch (static_cast<MTLPixelFormat>(format)) {
     case MTLPixelFormatDepth16Unorm:
     case MTLPixelFormatDepth32Float:
+#if !TARGET_OS_IPHONE // iOS has no 24-bit depth (nor Apple GPUs on the Mac)
     case MTLPixelFormatDepth24Unorm_Stencil8:
+#endif
     case MTLPixelFormatDepth32Float_Stencil8:
         return true;
     default:
@@ -435,10 +437,12 @@ bool IsDepthPixelFormat(u32 format) {
 bool HasStencilPixelFormat(u32 format) {
     switch (static_cast<MTLPixelFormat>(format)) {
     case MTLPixelFormatStencil8:
-    case MTLPixelFormatDepth24Unorm_Stencil8:
     case MTLPixelFormatDepth32Float_Stencil8:
     case MTLPixelFormatX32_Stencil8:
+#if !TARGET_OS_IPHONE
+    case MTLPixelFormatDepth24Unorm_Stencil8:
     case MTLPixelFormatX24_Stencil8:
+#endif
         return true;
     default:
         return false;

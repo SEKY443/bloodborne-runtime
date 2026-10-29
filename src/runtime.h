@@ -108,6 +108,8 @@ int32_t runtime_guest_errno(int host_errno);
 void *runtime_low_map(size_t size, int prot);
 /* BB_NATIVE_LIB: native versions of game functions replace the game's (runtime_native.c). */
 void runtime_native_load(uint64_t image_base);
+/* iOS: the game's spinning mutex as host code (runtime_game_lock.c). */
+void runtime_game_lock_load(uint64_t image_base);
 /* The game's command buffers: one writer at a time, BB_CB_PROBE=1 reports (runtime_cmdbuf.c). */
 void runtime_cmdbuf_load(uint64_t image_base);
 void runtime_cmdbuf_fault_report(void);
@@ -118,6 +120,7 @@ void runtime_audio_report(void);
 uintptr_t runtime_pad_resolve(const char *name);
 void runtime_pad_report(void);
 uintptr_t runtime_rtc_resolve(const char *name);
+uintptr_t runtime_libc_resolve(const char *name); /* runtime_libc.c: iOS only */
 const char *runtime_file_user_dir(void);
 void runtime_savedata_configure(const char *title);
 uintptr_t runtime_savedata_resolve(const char *name);

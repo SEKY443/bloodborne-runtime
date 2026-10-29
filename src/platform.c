@@ -86,6 +86,8 @@ void bb_set_thread_name(const char *name) { pthread_setname_np(pthread_self(),na
 void bb_game_thread_priority(void) {}
 int bb_random(void *buffer, size_t size) { return getrandom(buffer,size,0)<0 ? -1 : 0; }
 void bb_latency_critical(void) {}
+void bb_thread_qos(pthread_attr_t *attributes) { (void)attributes; }
+unsigned bb_thread_qos_self(void) { return 0; }
 uintptr_t bb_thread_stack_top(void) {
     pthread_attr_t attr; void *base=NULL; size_t size=0;
     if (!pthread_getattr_np(pthread_self(),&attr)) { pthread_attr_getstack(&attr,&base,&size); pthread_attr_destroy(&attr); }
@@ -137,9 +139,20 @@ uint32_t bb_guest_tls_displacement(void) { return 0; }
 #else /* macOS */
 #include <os/lock.h>
 #include <dlfcn.h>
+#include <pthread/qos.h>
 #include <objc/objc.h>
 #include <mach/mach.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+/* iOS (proof of concept) has no <mach/mach_vm.h>; its vm_* calls take 64-bit addresses on arm64. */
+#define mach_vm_address_t vm_address_t
+#define mach_vm_size_t vm_size_t
+#define mach_vm_read_overwrite vm_read_overwrite
+#define mach_vm_region vm_region_64
+#define mach_vm_allocate vm_allocate
+#else
 #include <mach/mach_vm.h>
+#endif
 
 uint64_t bb_gettid(void) { uint64_t id=0; pthread_threadid_np(NULL,&id); return id; }
 size_t bb_read_memory(void *dst, uintptr_t src, size_t n) {
@@ -172,6 +185,22 @@ int bb_shared_memory(const char *name, uint64_t size) {
     for (unsigned attempt=0; attempt<16; ++attempt) {
         snprintf(path,sizeof(path),"/%.20s-%d-%u",name,(int)getpid(),attempt);
         int fd=shm_open(path,O_RDWR|O_CREAT|O_EXCL,0600);
+#if TARGET_OS_IPHONE
+        /* iOS (proof of concept): the app sandbox refuses POSIX shared memory; an unlinked
+         * temporary file is mapped the same way (its clean pages can even be dropped under
+         * memory pressure). */
+        if (fd<0 && errno!=EEXIST) {
+            const char *tmp=getenv("TMPDIR");
+            char file[1024];
+            snprintf(file,sizeof(file),"%s/%.20s-%d-%u",tmp ? tmp : "/tmp",name,(int)getpid(),attempt);
+            fd=open(file,O_RDWR|O_CREAT|O_EXCL,0600);
+            if (fd<0) { if (errno==EEXIST) continue; return -1; }
+            unlink(file);
+            fcntl(fd,F_SETFD,FD_CLOEXEC);
+            if (ftruncate(fd,(off_t)size)) { close(fd); return -1; }
+            return fd;
+        }
+#endif
         if (fd<0) { if (errno==EEXIST) continue; return -1; }
         shm_unlink(path);
         fcntl(fd,F_SETFD,FD_CLOEXEC);
@@ -183,8 +212,22 @@ int bb_shared_memory(const char *name, uint64_t size) {
 /* No hole punching in shared memory objects: the pages are cleared through the host view. The
  * memory compressor keeps zero pages almost free. */
 void bb_shared_memory_zero(int fd, unsigned char *view, uint64_t offset, uint64_t size) {
+    if (view) { memset(view+offset,0,size); return; }
+#if TARGET_OS_IPHONE
+    /* iOS (proof of concept): the pool is a file with no host view (runtime_memory.c pool()):
+     * the range becomes a hole, which reads as zeros. */
+    struct fpunchhole hole={.fp_flags=0,.reserved=0,.fp_offset=(off_t)offset,.fp_length=(off_t)size};
+    if (fcntl(fd,F_PUNCHHOLE,&hole)) {
+        static const unsigned char zeros[65536];
+        for (uint64_t done=0;done<size;) {
+            const uint64_t n=size-done<sizeof(zeros) ? size-done : sizeof(zeros);
+            if (pwrite(fd,zeros,n,(off_t)(offset+done))!=(ssize_t)n) break;
+            done+=n;
+        }
+    }
+#else
     (void)fd;
-    if (view) memset(view+offset,0,size);
+#endif
 }
 /* The guest ranges are reserved (PROT_NONE) before any library starts: macOS hands out
  * addresses from the bottom of the address space, so Metal, MoltenVK or the system allocator
@@ -299,6 +342,16 @@ int bb_random(void *buffer, size_t size) { arc4random_buf(buffer,size); return 0
  * NSActivityUserInitiated | NSActivityLatencyCritical turns off timer coalescing and App Nap,
  * which delay the game's short sleeps and the GPU threads' wakeups. The activity is kept for the
  * whole process. Resolved at run time: programs without Foundation (the tests) skip it. */
+void bb_thread_qos(pthread_attr_t *attributes) {
+    static int qos=-1;
+    if (qos < 0) {
+        const char *env=getenv("BB_THREAD_QOS");
+        qos=!env ? 0 : !strcmp(env,"interactive") ? QOS_CLASS_USER_INTERACTIVE
+                     : !strcmp(env,"initiated") ? QOS_CLASS_USER_INITIATED : 0;
+    }
+    if (qos) pthread_attr_set_qos_class_np(attributes,(qos_class_t)qos,0);
+}
+unsigned bb_thread_qos_self(void) { return (unsigned)qos_class_self(); }
 void bb_latency_critical(void) {
     typedef void *(*GetClass)(const char *);
     typedef SEL (*RegisterName)(const char *);

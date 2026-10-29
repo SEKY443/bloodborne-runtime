@@ -10,6 +10,9 @@
 #include <signal.h>
 #include <time.h>
 #include <sys/time.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -114,7 +117,18 @@ extern "C" {
  * [BB_LOW_MIN, BB_LOW_MAX): host memory the guest sees (image, stacks, trampolines, the runtime's
  * heap on macOS). [BB_USER_MIN, BB_USER_MAX): the game's own mappings. Under Rosetta 2 the range
  * [0xfc0000000, 0x7000000000) cannot be mapped, so the game's range starts at 448 GiB there. */
-#if defined(BB_MACOS) && defined(__aarch64__)
+#if defined(BB_MACOS) && TARGET_OS_IPHONE
+/* iOS (proof of concept, branch ios-poc): without the extended-virtual-addressing entitlement
+ * the only block free for large mappings at start is [0x7000000000, 0x7180000000), 6 GiB (the
+ * shared cache and a permanent 384 GiB guard hold the rest; measured on an iPhone 17 Pro Max).
+ * The low range takes 512 MiB (image, import stubs, guest stacks, the runtime's heap), the
+ * game's range the remaining 5.5 GiB: its 5056 MiB of direct memory and 448 MiB of flexible
+ * memory, with 128 MiB to spare. */
+#define BB_LOW_MIN UINT64_C(0x7000000000)
+#define BB_LOW_MAX UINT64_C(0x7020000000)
+#define BB_USER_MIN UINT64_C(0x7020000000)
+#define BB_USER_MAX UINT64_C(0x7180000000)
+#elif defined(BB_MACOS) && defined(__aarch64__)
 /* Native arm64 macOS: [0x180000000, 0x7000000000) is the shared region and the host's own
  * allocations start at 0x7000000000 (the GPU driver reserves ~24 GiB there before main), so the
  * game's range starts at 512 GiB and the low range sits just below its end, under 1 TiB. The
@@ -173,6 +187,12 @@ void bb_game_thread_priority(void);
 /* macOS: tells the system the process is latency-critical and user-initiated (no timer
  * coalescing or App Nap); nothing elsewhere. */
 void bb_latency_critical(void);
+/* Apple: the scheduling class of the game's threads, from BB_THREAD_QOS (interactive: user
+ * interactive, initiated: user initiated; unset: the system's choice). On a phone it decides
+ * whether a thread may run on the few fast cores. Nothing elsewhere. */
+void bb_thread_qos(pthread_attr_t *attributes);
+/* The calling thread's scheduling class as a number (Apple's qos_class_t; 0 elsewhere). */
+unsigned bb_thread_qos_self(void);
 /* Fills the buffer with random bytes; 0 on success. */
 int bb_random(void *buffer, size_t size);
 /* Highest address of the calling thread's stack. */

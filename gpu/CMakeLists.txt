@@ -220,7 +220,13 @@ file(GLOB LAYER_SOURCES CONFIGURE_DEPENDS layer/*.cpp)
 file(GLOB GAME_SOURCES CONFIGURE_DEPENDS games/*.cpp)
 # The translator's own command processor (bbport's docs/TRANSLATOR_ARCHITECTURE.ru.md, step 2): cp/.
 file(GLOB CP_SOURCES CONFIGURE_DEPENDS cp/*.cpp)
-add_library(bbgpu SHARED ${VIDEO_CORE} ${RECOMPILER} ${COMMON} ${SHIM_SOURCES} ${LAYER_SOURCES} ${GAME_SOURCES} ${CP_SOURCES}
+# iOS (proof of concept, branch ios-poc): a static library linked into the app.
+if (IOS)
+    set(BB_GPU_LIBRARY_TYPE STATIC)
+else()
+    set(BB_GPU_LIBRARY_TYPE SHARED)
+endif()
+add_library(bbgpu ${BB_GPU_LIBRARY_TYPE} ${VIDEO_CORE} ${RECOMPILER} ${COMMON} ${SHIM_SOURCES} ${LAYER_SOURCES} ${GAME_SOURCES} ${CP_SOURCES}
     shadps4/core/libraries/gnmdriver/gnmdriver.cpp
     shadps4/core/libraries/videoout/driver.cpp shadps4/core/libraries/videoout/video_out.cpp
     shadps4/core/libraries/kernel/equeue.cpp ${AVPLAYER}
