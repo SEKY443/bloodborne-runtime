@@ -18,8 +18,10 @@
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <chrono>
@@ -99,10 +101,15 @@ struct Record {
     // T#s and S#s are read on the GPU thread, as the GPU reads the binder's tables) and each
     // constant buffer's size and address; the vertex buffers' strides and addresses with their
     // offsets. Buffer addresses the engine's managers place are asked for at libGnm's draw.
+    // Only the first `textures` texture slots are written (the rest are empty and left out of
+    // copies: a record is 7 KB with all 128 slots of every stage, and copying it whole on each
+    // filing and lookup was a tenth of the GPU thread's time).
     struct Resources {
-        u64 texture[StageTextureSlots], sampler[16];
+        u64 sampler[16];
         u32 constant_buffer_size[14];
         u64 constant_buffer_address[14];
+        u32 textures;
+        u64 texture[StageTextureSlots]; // last: a stage's used part is a prefix
     } stage[StageCount];
     u32 vertex_stride[32];
     u64 vertex_address[32]; // 0: an empty slot
@@ -134,8 +141,28 @@ bool take_mesh_draws = false; // BB_RENDER_BOUNDARY=mesh
 /// walker).
 enum FlatMode { FlatOff, FlatCheck, FlatFill };
 FlatMode flat_mode = FlatOff;
+struct Plan;
+const Plan* WorkerPlan(const void* program); // a program's published plan (N2.3, below)
 u64 image_base = 0;
 std::atomic<u64> method_calls[Methods], filed{0}, gnm_without_method{0}, gnm_nested{0}, no_room{0}, next_number{1};
+
+// The parts of a record that hold data: everything but each stage's unused texture slots.
+template <typename F>
+void ForEachPart(const Record& r, F part) {
+    part(0, offsetof(Record, stage));
+    for (int s = 0; s < StageCount; ++s) {
+        const u32 used = std::min<u32>(r.stage[s].textures, StageTextureSlots); // torn reads: clamped
+        part(offsetof(Record, stage) + s * sizeof(Record::Resources),
+             offsetof(Record::Resources, texture) + used * sizeof(u64));
+    }
+    part(offsetof(Record, vertex_stride), sizeof(Record) - offsetof(Record, vertex_stride));
+}
+
+void CopyRecord(Record& to, const Record& from) {
+    ForEachPart(from, [&](std::size_t at, std::size_t size) {
+        std::memcpy(reinterpret_cast<char*>(&to) + at, reinterpret_cast<const char*>(&from) + at, size);
+    });
+}
 
 std::size_t SlotOf(u64 key) {
     return std::size_t(key) & (Slots - 1);
@@ -147,7 +174,7 @@ void File(const Record& record) {
     if (s & 1 || !slot.sequence.compare_exchange_strong(s, s + 1, std::memory_order_acquire)) {
         return; // another thread is writing it: drop this one
     }
-    std::memcpy(&slot.record, &record, sizeof(record));
+    CopyRecord(slot.record, record);
     slot.sequence.store(s + 2, std::memory_order_release);
 }
 
@@ -158,7 +185,7 @@ bool Find(u64 key, Record& out) {
         if (s & 1) {
             continue;
         }
-        std::memcpy(&out, &slot.record, sizeof(out));
+        CopyRecord(out, slot.record);
         std::atomic_thread_fence(std::memory_order_acquire);
         if (slot.sequence.load(std::memory_order_relaxed) == s) {
             return out.key == key;
@@ -199,6 +226,9 @@ void ReadResources(u64 state, Record& d) {
         }
         for (u32 i = 0; i < StageTextureSlots; ++i) {
             r.texture[i] = Read<u64>(stage + StageTextures + 8 * i);
+            if (r.texture[i]) {
+                r.textures = i + 1;
+            }
         }
         for (u32 i = 0; i < 16; ++i) {
             r.sampler[i] = Read<u64>(stage + StageSamplers + 8 * i);
@@ -227,7 +257,10 @@ void ReadResources(u64 state, Record& d) {
 void __attribute__((sysv_abi)) OnMethod(u64 tag, const Core::GuestRegisterSnapshot* r) {
     method_calls[tag].fetch_add(1, std::memory_order_relaxed);
     Record& d = pending.record;
-    d = {};
+    for (int s = 0; s < StageCount; ++s) {
+        d.stage[s].textures = 0;
+    }
+    ForEachPart(d, [&](std::size_t at, std::size_t size) { std::memset(reinterpret_cast<char*>(&d) + at, 0, size); });
     d.method = u32(tag);
     pending.context = r->rdi;
     // Called from the mesh draw: its return address is in CG::MeshRenderer::drawMesh. From the
@@ -539,7 +572,7 @@ void Take(const T& from, const T& into_const) {
 void TakeResources(const Vulkan::PreparedStage& p, const Record::Resources& r, const SlotMap& map) {
     for (u32 k = 0; k < p.num_images && k < map.images.size(); ++k) {
         const u32 slot = FirstSlot(map.images[k]);
-        if (slot < StageTextureSlots && r.texture[slot]) {
+        if (slot < r.textures && r.texture[slot]) {
             AmdGpu::Image sharp;
             std::memcpy(&sharp, reinterpret_cast<const void*>(r.texture[slot] + TextureSharp), sizeof(sharp));
             Take(sharp, p.image_sharps[k]);
@@ -713,13 +746,18 @@ void CompareResources(const Record& d, const AmdGpu::Regs& regs, const Vulkan::P
         if (s == Vertex) {
             vertex_stage = &p;
         }
+        // N2.3: a program with a plan has its slot map learnt: hashing every slot of every draw
+        // again (128 textures and 16 samplers a stage) was the observer's main cost on this thread.
+        if (flat_mode != FlatOff && WorkerPlan(p.program)) {
+            continue;
+        }
         ProgramInventory& entry = Inventory(p);
         ++entry.draws;
         entry.mesh_draws += d.mesh;
         const auto& r = d.stage[s];
         u32 texture_hash[StageTextureSlots], sampler_hash[16];
         for (u32 slot = 0; slot < StageTextureSlots; ++slot) {
-            texture_hash[slot] = r.texture[slot]
+            texture_hash[slot] = slot < r.textures && r.texture[slot]
                                      ? SlotHash(reinterpret_cast<const void*>(r.texture[slot] + TextureSharp),
                                                 sizeof(AmdGpu::Image))
                                      : 0;
@@ -974,7 +1012,9 @@ bool FillFrom(const Plan& plan, const Record::Resources& r, const Shader::Info& 
     std::memcpy(flat.data(), info.user_data.data(), info.user_data.size_bytes());
     for (u32 k = 0; k < info.images.size(); ++k) {
         std::array<u32, 8> dwords;
-        const auto texture = [&](u32 slot) { return r.texture[slot] ? r.texture[slot] + TextureSharp : 0; };
+        const auto texture = [&](u32 slot) {
+            return slot < r.textures && r.texture[slot] ? r.texture[slot] + TextureSharp : 0;
+        };
         if (!AgreedSharp(plan.images[k], texture, dwords) || !Place(info.images[k].sharp_fetch, dwords, flat)) {
             return false;
         }
