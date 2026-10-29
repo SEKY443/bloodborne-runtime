@@ -23,7 +23,10 @@ project it is based on.
   (`gpu/games/bloodborne_menu_pointer.cpp`; its findings first published in a fork of bbport) and
   the button prompts for the device in use (`bbport_button_prompts.cpp`, `vk_prompt_images.cpp`).
   From 0.7 (`0fc2921`): the guard for GX occlusion queries without a handle (the fault at
-  `0x2169edc`; whp199, bbport PR #343), as entry hooks in `bbport_guest_hooks.cpp`.
+  `0x2169edc`; whp199, bbport PR #343), as entry hooks in `bbport_guest_hooks.cpp`; the cloth
+  stiffness per frame time above 30 FPS (bbport #58, `bbport_frame_rate.cpp`); the play time at high
+  frame rates, the hit collector's cap and the save's character-id guard, which bbport took from
+  [SrShadowy](https://github.com/SrShadowy)'s fork (`bbport_guest_hooks.cpp`).
 - [**shadPS4**](https://github.com/shadps4-emu/shadPS4): the video core and shader recompiler
   (GPL-2.0+), and [sirit](https://github.com/shadps4-emu/sirit).
 - **shadp2p** (a shadPS4 fork, GPL-2.0): the network and PSN libraries of the Linux online module

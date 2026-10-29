@@ -521,6 +521,118 @@ void __attribute__((sysv_abi)) GxQueryEndHook(u64, const Core::GuestRegisterSnap
 }
 } // namespace
 
+// ---- Fixes to the game's own code (bbport 0.7, from the SrShadowy fork's engine fixes) ----
+// From deadinside28/bloodborne_pc 0.7 (0fc2921, gpu/shim/bbport_engine_fixes.cpp), which took them
+// from SrShadowy's fork (extra/core/engine_fixes); its light-grid setting is not taken.
+namespace {
+/// vcvttss2si rcx, xmm0: the frame's play time in ms (xmm0 = dt * 1000), added to the save's play
+/// time (GameDataMan + 0x94) right after.
+constexpr u64 PlayTimeConvert = 0x19419de;
+constexpr std::array<u8, 5> PlayTimeConvertCode = {0xc4, 0xe1, 0xfa, 0x2c, 0xc8};
+/// Havok's 96-byte hit collector push_back (rdi = the array, rsi = the hit).
+constexpr u64 HitPushBack = 0xb84ce0;
+constexpr std::array<u8, 6> HitPushBackEntry = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x56};
+/// The step before a save serializes the player's data.
+constexpr u64 CharaStep = 0x1c43ee0;
+constexpr std::array<u8, 6> CharaStepEntry = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
+constexpr u64 GameDataMan = 0x553b130;
+std::atomic<u64> hits_dropped{0}, chara_ids_cleared{0};
+
+// The game truncates each frame's milliseconds: at 60 FPS (16.67 ms) a frame counted 16 ms and the
+// play time ran 4 % slow, more the higher the frame rate. The fraction is carried to the next frame
+// (one thread: the game's main loop).
+void __attribute__((sysv_abi)) PlayTimeHook(u64, const Core::GuestRegisterSnapshot* r) {
+    static double carry_ms = 0.0;
+    auto* regs = const_cast<Core::GuestRegisterSnapshot*>(r);
+    float ms = 0.0f;
+    std::memcpy(&ms, regs->ymm[0].data(), sizeof(ms));
+    const double total = double(ms) + carry_ms;
+    if (!(total > 0.0) || total > 60000.0) {
+        carry_ms = 0.0; // a pause or a hitch: as the game counted it
+        return;
+    }
+    const double whole = double(u64(total));
+    carry_ms = total - whole;
+    const float out = float(whole);
+    std::memcpy(regs->ymm[0].data(), &out, sizeof(out));
+}
+
+// A degenerate query (a zero-length ray while the world is paused) filled the collector without end
+// until an allocation failed. Past BB_HIT_COLLECTOR_CAP (65536) hits the call writes into this
+// thread's scratch array instead: the game's function runs as it is, nothing is skipped.
+struct alignas(16) ScratchArray {
+    u8 head[0x20];
+    void* data;
+    std::int32_t size;
+    std::int32_t capacity;
+};
+void __attribute__((sysv_abi)) HitPushBackHook(u64, const Core::GuestRegisterSnapshot* r) {
+    static const std::int32_t cap = [] {
+        const char* env = std::getenv("BB_HIT_COLLECTOR_CAP");
+        const long v = env ? std::strtol(env, nullptr, 10) : 65536;
+        return std::int32_t(v > 0 ? v : 65536);
+    }();
+    const auto* array = reinterpret_cast<const u8*>(r->rdi);
+    if (!array) {
+        return;
+    }
+    std::int32_t size = 0;
+    void* data = nullptr;
+    std::memcpy(&size, array + 0x28, sizeof(size));
+    std::memcpy(&data, array + 0x20, sizeof(data));
+    if (size < cap && (data || size == 0)) {
+        return;
+    }
+    alignas(16) thread_local std::array<u8, 96> hit{};
+    thread_local ScratchArray scratch{};
+    scratch.data = hit.data();
+    scratch.size = 0;
+    scratch.capacity = 1;
+    const_cast<Core::GuestRegisterSnapshot*>(r)->rdi = reinterpret_cast<u64>(&scratch);
+    if (hits_dropped.fetch_add(1, std::memory_order_relaxed) == 0) {
+        std::printf("Engine fixes: a hit collector reached %d hits: further hits dropped\n", int(size));
+    }
+}
+
+// An invalid character id (0x8000000000000000) in the player's data (GameDataMan + 8 -> +0x690),
+// cleared before the save serializes it (SrShadowy's fork: corrupted saves).
+void __attribute__((sysv_abi)) CharaStepHook(u64, const Core::GuestRegisterSnapshot*) {
+    u64 manager = 0, player = 0, id = 0;
+    std::memcpy(&manager, reinterpret_cast<const void*>(ImageBase + GameDataMan), sizeof(manager));
+    if (manager < 0x100000000ull) {
+        return;
+    }
+    std::memcpy(&player, reinterpret_cast<const void*>(manager + 0x8), sizeof(player));
+    if (player < 0x100000000ull) {
+        return;
+    }
+    auto* field = reinterpret_cast<u8*>(player + 0x690);
+    std::memcpy(&id, field, sizeof(id));
+    if (id == 0x8000000000000000ull) {
+        const u64 none = 0;
+        std::memcpy(field, &none, sizeof(none));
+        if (chara_ids_cleared.fetch_add(1, std::memory_order_relaxed) == 0) {
+            std::printf("Engine fixes: an invalid character id cleared before a save\n");
+        }
+    }
+}
+} // namespace
+
+void InstallEngineFixes() {
+    const auto install = [](const char* env, u64 offset, auto code, auto hook) -> const char* {
+        if (const char* v = std::getenv(env); v && v[0] == '0') {
+            return "off";
+        }
+        return Core::InstallGuestCodeHook(reinterpret_cast<void*>(ImageBase + offset), code, offset, hook)
+                   ? "on" : "not installed (other code there)";
+    };
+    const char* play = install("BB_FIX_PLAY_TIME", PlayTimeConvert, PlayTimeConvertCode, PlayTimeHook);
+    const char* hits = install("BB_FIX_HIT_COLLECTOR", HitPushBack, HitPushBackEntry, HitPushBackHook);
+    const char* chara = install("BB_FIX_CHARA_ID", CharaStep, CharaStepEntry, CharaStepHook);
+    std::printf("Engine fixes (bbport 0.7): high frame rate play time %s, hit collector cap %s, save "
+                "character id guard %s\n", play, hits, chara);
+}
+
 bool InstallGxQueryGuard() {
     if (const char* env = std::getenv("BB_GX_QUERY_GUARD"); env && env[0] == '0') {
         return false;

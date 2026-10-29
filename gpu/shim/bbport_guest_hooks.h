@@ -17,4 +17,7 @@ void Install(RangeCallback on_gpu_range_allocated);
 /// The guard for GX occlusion queries without a handle (bbport 0.7, the fault at 0x2169edc).
 /// Installed from bbgpu_patch_image on every platform, before the recompiled library is checked.
 bool InstallGxQueryGuard();
+/// Fixes to the game's own code from bbport 0.7: the play time at high frame rates, the hit
+/// collector's cap, the save's invalid character id. From bbgpu_patch_image, every platform.
+void InstallEngineFixes();
 } // namespace BbGuestHooks

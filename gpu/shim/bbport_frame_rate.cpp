@@ -95,15 +95,52 @@ void PS4_SYSV_ABI FrameStep(u64 pacer) {
     live->step_down = -0.1f * frames;
     live->step_up = 0.1f * frames;
     live->decay08 = std::pow(0.8f, frames);
-    // Cloth is stiffer the more often it is solved: the game's 1.0 at 30 FPS, 0.5 from 60 FPS up
-    // (the value the community's 60 FPS patches settled on). It is the upper bound the cloth
-    // setups clamp their Stiffness, Rigid Factor and Allowed Compression to when they load.
-    // BB_CLOTH_STIFFNESS=value (diagnostics): that bound at any frame rate.
+    // The cloth setups' range checks of Stiffness, Rigid Factor and Allowed Compression and a few
+    // uses of 1.0 next to them: the game's 1.0. The cloth follows the frame rate by its constraints'
+    // stiffness factor instead (ClothStiffnessFactor, bbport 0.7); the bound of 0.5 from 60 FPS up
+    // that came before only clamped a range and the cloth still fluttered above 30 FPS.
+    // BB_CLOTH_STIFFNESS=value (diagnostics): another value there.
     static const float cloth_override = [] {
         const char* env = std::getenv("BB_CLOTH_STIFFNESS");
         return env && *env ? std::strtof(env, nullptr) : -1.0f;
     }();
-    live->cloth = cloth_override > 0.0f ? cloth_override : std::clamp(frames, 0.5f, 1.0f);
+    live->cloth = cloth_override > 0.0f ? cloth_override : 1.0f;
+}
+
+// ---- Cloth: the constraints' stiffness factor per substep (bbport 0.7, #58) ----
+// From deadinside28/bloodborne_pc 0.7 (0fc2921, gpu/shim/bbport_frame_rate.cpp), without its
+// experiment switches.
+/// The game's exponent of Havok's stiffness adaptation (0x48d7bbc: -1.725), read at start.
+float cloth_exponent = -1.725f;
+std::atomic<u64> cloth_calls{0};
+
+/// Havok's stiffness factor of a constraint set for one substep (0x1167a80, replaced): `mode` 2
+/// adapts the constraints' stiffness to how often they are solved, (substeps x a x b)^-1.725
+/// (a, b the instance's scales at +0x1d0/+0x1d4), for a set of type 8 the iteration's share
+/// instead and for types 5 and 10 only the last substep. The substeps are per frame: at 60 FPS
+/// the cloth is solved twice as often as at 30 FPS by the same factor, and stiffer by as much (it
+/// flutters). The factor here is the game's x frames (the frame's length in 30 FPS frames): the
+/// cloth is pulled as far per second as at 30 FPS. At 30 FPS it is the game's.
+float PS4_SYSV_ABI ClothStiffnessFactor(const u8* set, int mode, int iteration, int substeps, float a,
+                                        float b) {
+    const std::uint32_t type = *reinterpret_cast<const std::uint32_t*>(set + 0x18);
+    if (cloth_calls.fetch_add(1, std::memory_order_relaxed) == 20000) {
+        std::printf("Frame rate: cloth stiffness factor at %.0f FPS: x%.3f\n", 1.0f / live->dt, live->dt * 30.0f);
+    }
+    const bool adapts = mode == 2 && !(substeps == 1 && a == 1.0f && b == 1.0f);
+    if (adapts && type == 8) {
+        return float(iteration + 1) / float(substeps);
+    }
+    if (adapts && (type == 5 || type == 10)) {
+        return substeps - 1 == iteration ? 1.0f : 0.0f;
+    }
+    const float game = adapts ? std::pow(float(substeps) * a * b, cloth_exponent) : 1.0f;
+    if (type == 5 || type == 8 || type == 10) {
+        return game;
+    }
+    // A constraint solved with stiffness k pulls its particles k of the way per solve: at 30 FPS
+    // k a frame, at any frame rate ~k x frames a frame. x0.5 at 60 FPS, the community's value.
+    return game * live->dt * 30.0f;
 }
 
 // ---- Redirected constants: instruction (its RIP-relative operand), the constant, the value ----
@@ -313,6 +350,19 @@ int HookRunSpeed() {
     return Detour(site, expected, 8, e) ? 1 : 0;
 }
 
+/// Havok's stiffness factor (0x1167a80: `push rbp; mov rbp, rsp; push r15`) by
+/// ClothStiffnessFactor, its arguments as they are (a jump from the function's entry: the
+/// caller's return address is on the stack, and bbcpu calls the host function from there).
+bool HookClothStiffness() {
+    constexpr u64 site = 0x1167a80;
+    constexpr u8 code[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
+    std::memcpy(&cloth_exponent, reinterpret_cast<const void*>(image_base + 0x48d7bbc), sizeof(float));
+    if (!(cloth_exponent < 0.0f && cloth_exponent > -4.0f)) return false;
+    Emitter e;
+    e.JmpAbs(reinterpret_cast<u64>(&ClothStiffnessFactor));
+    return Detour(site, code, sizeof(code), e);
+}
+
 /// A mapping within +-2 GiB of the image, for rel32 jumps and RIP-relative operands.
 u8* MapNear(int prot) {
 #if defined(__APPLE__)
@@ -379,6 +429,11 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     BbSettings::SetLiveFpsLimit(SetLimit);
     int steps = HookFixedStep(0x17f9b71, -0x48) + HookFixedStep(0x1572a7d, -0x30);
     const int run = HookRunSpeed();
+    const bool cloth = HookClothStiffness();
+    if (!cloth) {
+        std::printf("Frame rate: Havok's cloth stiffness is not the expected code: the cloth keeps the "
+                    "game's stiffness per solve\n");
+    }
     int redirected = 0;
     for (const Redirect& r : Redirects) {
         if (RedirectOperand(r)) {

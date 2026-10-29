@@ -385,6 +385,7 @@ extern "C" void bbgpu_patch_image(unsigned char* image, uint64_t size) {
     BbGameHooks::PatchImage(image, size);
     BbDrawCensus::PatchImage(image, size);
     BbRenderBoundary::PatchImage(image, size);
+    BbGuestHooks::InstallEngineFixes();
     std::printf("Guest hooks: GX occlusion query guard %s\n",
                 BbGuestHooks::InstallGxQueryGuard() ? "in (bbport 0.7, the fault at 0x2169edc)"
                                                     : "not installed (BB_GX_QUERY_GUARD=0 or other code there)");
