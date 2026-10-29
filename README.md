@@ -28,9 +28,8 @@ submodule), or as recompiled native code it generates.
 
 ## Status
 
-- Native Metal is the default on Apple Silicon since the app's 0.9.0 RC 1; MoltenVK stays
-  selectable until the Metal backend is accepted (players' reports on the 0.9.x releases and the
-  capability comparisons on M1 and M2 Macs). The online module ships from 0.9.0 RC 2.
+- Native Metal is the default on Apple Silicon since the app's 0.9.0 RC 1, and accepted (N5,
+  2026-10-29); MoltenVK stays selectable as a fallback. The online module ships from 0.9.0 RC 2.
 - The renderer's progress and next steps: [Native renderer](docs/NATIVE_RENDERER.md#progress).
 - Known crashes and corruption, fixed and open: [Stability](docs/STABILITY.md#open).
 - The app's releases, its roadmap and what players report:

@@ -15,8 +15,9 @@ This page is the renderer's status and plan. The GPU interface it is built on is
 
 1. **Multiplatform.** Nothing works on Metal only. Planning a frame, tracking resources and
    converting shaders happen in the shared core; a backend only speaks its API.
-2. **Always playable.** Native Metal is the default on Apple Silicon; the MoltenVK renderer stays
-   selectable (`BB_METAL_FRAME=0`) until N5 is accepted.
+2. **Always playable.** Native Metal is the default on Apple Silicon, accepted (N5, 2026-10-29); the
+   MoltenVK renderer stays selectable (`BB_METAL_FRAME=0`) until the maintainer decides whether the
+   fallback leaves the macOS app.
 3. **Measured.** Each step is compared against the path it replaces in alternating runs: FPS,
    frame-time p90, CPU time, the GPU thread's time per draw, and GPU time from Metal System
    Traces.
@@ -30,27 +31,23 @@ steps.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 76% `███████████████░░░░░` | N0, N1, N4 and N6 done; N5 the default, waiting for acceptance; N2 under way (the maintainer's focus from 2026-10-29) |
+| **R5 · native renderer** | 77% `███████████████░░░░░` | N0, N1, N4, N5 and N6 done; N2 under way (the maintainer's focus from 2026-10-29) |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
 | N2 · shaders from the draw state, then ahead of time | 40% `████████░░░░░░░░░░░░` | 2 of 5 steps: the plan and the inventory ([below](#n2-shaders-from-the-draw-state-then-ahead-of-time)). Next: N2.3, mesh shaders built with bindings for their draw-state slots |
 | N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N2. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
-| N5 · Metal backend | 95% `███████████████████░` | M1–M4 implemented; native Metal the default since 0.9.0 RC 1. Next: acceptance (below) |
+| N5 · Metal backend | 100% `████████████████████` | Accepted (the maintainer, 2026-10-29): M1–M4, native Metal the default since 0.9.0 RC 1 |
 | N6 · engine render boundary | 100% `████████████████████` | Done (re-scoped on 2026-10-28): the boundary found and observed, every input of a draw found from the draw state, mesh draws bound from it ([below](#n6-the-engines-render-boundary)); taking the other draw kinds over moved to N2 |
 
 ## Now and next
 
 In this order (the app's roadmap):
 
-1. **N5 acceptance (now).** The maintainer's play sessions passed. Acceptance waits for:
-   - players' reports on the 0.9.x releases (native Metal the default since 0.9.0 RC 1);
-   - the start-up capability comparison on M1 and M2 Macs (`BB_METAL_CAPS=compare` logs every
-     difference between the Metal backend's answers and MoltenVK's; `BB_METAL_CAPS=moltenvk`
-     uses MoltenVK's). On the M3 Pro it finds 0 differences.
-
-   Until then the app bundles MoltenVK and the Vulkan loader for the fallback only. After
-   acceptance: decide whether the fallback leaves the macOS app.
+1. **N5 accepted** (the maintainer, 2026-10-29): native Metal has been the default since 0.9.0
+   RC 1, through the maintainer's play sessions and players' reports on the 0.9.x releases. The
+   app still bundles MoltenVK and the Vulkan loader for the fallback (`BB_METAL_FRAME=0`); whether
+   it leaves the macOS app is the maintainer's decision.
 2. **N2, shaders from the draw state, then native shaders ahead of time (now: the maintainer's
    focus from 2026-10-29).** N6 found that each resource a shader reads comes from a fixed slot of
    the engine's draw state. While shaders are converted GCN code they read the PS4 user data
