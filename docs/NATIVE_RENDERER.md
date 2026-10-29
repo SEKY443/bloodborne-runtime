@@ -243,7 +243,7 @@ the test save, translator, no faults):
 |---|---|---|
 | N2.1 · the plan | 100% `████████████████████` | This section |
 | N2.2 · the inventory | 100% `████████████████████` | The shaders use the user data only to locate their resources (below) |
-| N2.3 · mesh shaders from the draw state | 0% `░░░░░░░░░░░░░░░░░░░░` | Next: mesh draws' shaders built with fixed bindings for their draw-state slots (N6's slot maps), so neither the user-data walk nor its upload is needed for them; measured against today's path |
+| N2.3 · mesh draws from the draw state | 0% `░░░░░░░░░░░░░░░░░░░░` | Now: the flattened user data of mesh draws written from the draw state through N6's slot maps, without the walker ([design](#n23s-design-the-flat-buffer-from-the-draw-state)); measured against today's path |
 | N2.4 · the other draw kinds | 0% `░░░░░░░░░░░░░░░░░░░░` | The other draw methods' draws, then the compute passes, render-target passes and Scaleform: each from its own boundary, or left to the packet path |
 | N2.5 · ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | The shaders converted once on the player's machine, keyed by the game's shader code, so none is compiled during play |
 
@@ -265,6 +265,33 @@ geometry-shader draws are not prepared by the workers and not counted):
 
 So a shader rebuilt with fixed bindings for the draw-state slots its resources come from (N6's
 slot maps) needs no user data at all: neither the walk nor the upload.
+
+### N2.3's design: the flat buffer from the draw state
+
+Where the cost is: for every stage of every draw, the draw-preparation worker runs the shader's
+SRT walker (`Info::RefreshFlatBuf`, `RunSrtProgram`: about a quarter of the workers' time), which
+follows the PS4 user data through the game's memory and writes each resource's sharp into the
+flattened user data. Everything after reads that buffer: the shader's specialization (which
+permutation the draw uses), `PrepareResources` (the sharps the GPU thread binds) and the shader
+itself.
+
+The change: for a mesh draw whose shader programs have complete slot maps (each resource from
+exactly one draw-state slot), the worker writes the sharps from the engine's draw state into the
+flattened buffer at the offsets the shader recompiler recorded (`sharp_idx`), after the
+user-data registers, and does not run the walker. What reads the buffer is unchanged.
+
+The steps:
+
+1. **The worker knows its draw's record.** It already reads every packet of the submission
+   (`ForEachPacket`); it notes the render boundary's NOP tag before a draw, as the packet reader
+   does, and looks the record up.
+2. **Slot maps the workers can read.** They are learned on the GPU thread; a program's map is
+   frozen once every resource has one slot and has kept it over a number of draws, and published
+   to the workers.
+3. **The flat buffer from the draw state**, behind `BB_RENDER_BOUNDARY=flat`; `flat-check` also
+   runs the walker and compares the two buffers (the check that mesh mode's "0 differing" was).
+4. **Measured** against today's path in alternating runs: the workers' CPU time, the draws they
+   prepare, frame time. Draws without a record or a frozen map keep the walker.
 
 ### What N2 builds on
 
