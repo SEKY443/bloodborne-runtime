@@ -26,18 +26,20 @@ This page is the renderer's status and plan. The GPU interface it is built on is
 ## Progress
 
 Each bar has 20 blocks, one per 5% of the step's accepted scope. R5 is the mean of its seven
-steps.
+steps. N6's work and N2's first two steps are on the `n6` branch (its
+[NATIVE_RENDERER.md](https://github.com/bloodborne-native/bloodborne-runtime/blob/n6/docs/NATIVE_RENDERER.md)
+has their sections); they reach main with N2.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 56% `███████████░░░░░░░░░` | N0, N1 and N4 done; N5 the default, waiting for acceptance; N6 next |
+| **R5 · native renderer** | 76% `███████████████░░░░░` | N0, N1, N4 and N6 done; N5 the default, waiting for acceptance; N2 paused at 40% (the recompiler's CPU work first) |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
-| N2 · shaders ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: an inventory of the shader variants the game uses |
-| N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N6. First action: trace where the engine creates and releases textures |
+| N2 · shaders from the draw state, then ahead of time | 40% `████████░░░░░░░░░░░░` | 2 of 5 steps on the `n6` branch: the plan and the inventory. Paused; next: N2.3, mesh shaders built with bindings for their draw-state slots |
+| N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N2. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 95% `███████████████████░` | M1–M4 implemented; native Metal the default since 0.9.0 RC 1. Next: acceptance (below) |
-| N6 · engine render boundary | 0% `░░░░░░░░░░░░░░░░░░░░` | Next. First action: the written plan in this document (below) |
+| N6 · engine render boundary | 100% `████████████████████` | Done (re-scoped on 2026-10-28): the boundary found and observed, every input of a draw found from the draw state, mesh draws bound from it ([on the branch](https://github.com/bloodborne-native/bloodborne-runtime/blob/n6/docs/NATIVE_RENDERER.md#n6-the-engines-render-boundary)); taking the other draw kinds over moved to N2 |
 
 ## Now and next
 
@@ -52,26 +54,17 @@ In this order (the app's roadmap):
 
    Until then the app bundles MoltenVK and the Vulkan loader for the fallback only. After
    acceptance: decide whether the fallback leaves the macOS app.
-2. **N6, the engine's render boundary (next).** The native renderer takes the engine's draws at
-   CoreGraphics2's seven draw methods, with their draw state, instead of decoding the PS4 command
-   buffers the game writes. R4 (bloodborne-recomp, done) named and described what it needs:
-   [the annotations](https://github.com/bloodborne-native/bloodborne-recomp/blob/main/docs/RECOMPILATION.md#annotations)
-   and `annotations/structs.h`. The first steps:
-   1. Write the plan here: how a draw's state maps onto the adapter (the input-assembly, output
-      merger and rasterizer blocks onto the pipeline description and `DrawState`; each stage's
-      samplers, textures and constant buffers onto binding slots; the vertex buffers onto the
-      vertex input); what keeps the packet path (render-target passes, compute passes,
-      Scaleform: the other 15% of the draws) and how both paths stay ordered in one frame; and
-      how the hook is reached from the recompiled library as well as from the translator.
-   2. A first hook that only observes: the seven methods' draws counted and their state read,
-      compared with what the packet reader decodes for the same draws, with nothing drawn
-      differently.
-   3. Then draws taken over one kind at a time, starting with the mesh draw (65% of the seven
-      methods' calls), each measured against the packet path.
-3. **The recompiler's CPU work** (bloodborne-recomp).
-4. **N2 and N3.** Shaders are still recompiled from GCN and converted to MSL while the game runs
-   (the Metal backend caches built pipelines between sessions); textures are still inferred from
-   GPU memory by shadPS4's texture cache.
+2. **The recompiler's CPU work** (bloodborne-recomp, the maintainer's choice of 2026-10-28 before
+   N2's next step, which can save at most 0.2–0.3 core of the draw-preparation threads). Calls
+   left to the translator are down from 69,600 a second to 9,400; what is left is memory ordering
+   kept only around the engine's synchronization, with the maintainer's conditions.
+3. **N2, shaders from the draw state, then ahead of time** (the `n6` branch, paused at 40%): N6
+   found every input of a draw in the engine's draw state and binds mesh draws from it; N2.3 builds
+   mesh shaders that read those slots instead of the PS4 user data, then the other draw kinds, then
+   the shaders converted once ahead of time.
+4. **N3, textures as objects.** Textures are still inferred from GPU memory by shadPS4's texture
+   cache. Until N2's last step, shaders are recompiled from GCN and converted to MSL the first time
+   the game uses them (the Metal backend caches built pipelines between sessions).
 
 ## What was measured
 
