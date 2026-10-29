@@ -31,10 +31,10 @@ steps.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 77% `███████████████░░░░░` | N0, N1, N4, N5 and N6 done; N2 under way (the maintainer's focus from 2026-10-29) |
+| **R5 · native renderer** | 80% `████████████████░░░░` | N0, N1, N4, N5 and N6 done; N2 at 60% (N2.3 done: mesh draws from the draw state, opt-in) |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
-| N2 · shaders from the draw state, then ahead of time | 40% `████████░░░░░░░░░░░░` | 2 of 5 steps: the plan and the inventory ([below](#n2-shaders-from-the-draw-state-then-ahead-of-time)). Next: N2.3, mesh shaders built with bindings for their draw-state slots |
+| N2 · shaders from the draw state, then ahead of time | 60% `████████████░░░░░░░░` | 3 of 5 steps: the plan, the inventory, mesh draws from the draw state (opt-in). Next: the other draw kinds (N2.4) and the shaders ahead of time (N2.5) |
 | N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N2. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 100% `████████████████████` | Accepted (the maintainer, 2026-10-29): M1–M4, native Metal the default since 0.9.0 RC 1 |
