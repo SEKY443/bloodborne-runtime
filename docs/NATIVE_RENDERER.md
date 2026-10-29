@@ -243,7 +243,7 @@ the test save, translator, no faults):
 |---|---|---|
 | N2.1 · the plan | 100% `████████████████████` | This section |
 | N2.2 · the inventory | 100% `████████████████████` | The shaders use the user data only to locate their resources (below) |
-| N2.3 · mesh draws from the draw state | 100% `████████████████████` | Done, opt-in (`BB_RENDER_BOUNDARY=flat`): mesh draws' flattened user data from the draw state on the workers and the GPU thread, without the walker; exact, no CPU change measured ([below](#n23s-design-the-flat-buffer-from-the-draw-state)) |
+| N2.3 · mesh draws from the draw state | 100% `████████████████████` | Done, opt-in (`BB_RENDER_BOUNDARY=flat`): mesh draws' flattened user data from the draw state on the workers and the GPU thread, without the walker; exact; the observer still costs 47 CPU points ([below](#n23s-design-the-flat-buffer-from-the-draw-state)) |
 | N2.4 · the other draw kinds | 0% `░░░░░░░░░░░░░░░░░░░░` | The other draw methods' draws, then the compute passes, render-target passes and Scaleform: each from its own boundary, or left to the packet path |
 | N2.5 · ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | The shaders converted once on the player's machine, keyed by the game's shader code, so none is compiled during play |
 
@@ -306,10 +306,12 @@ The steps:
   of walking: 3,725,047 of 3,725,047 such stages in a run. Without it the zeros the fill leaves
   between sharps failed the comparison and the GPU thread prepared those draws itself (92–129
   frames over 40 ms a run against about 35).
-- **No CPU change measured:** three alternating pairs, `flat` against `observe`, 430% against 424%,
-  within the runs' spread. What does cost is the observer itself: with either mode the game takes
-  about 425%, against about 345% without the render boundary; its hooks on every engine draw call
-  must become cheap before drawing from the engine can be the default.
+- **Cost:** with `flat` the game takes 394% CPU against 347% without the render boundary (three
+  alternating pairs, recompiled library), and 39.1 against 40.0 FPS. The fill itself saves no
+  measurable CPU; the cost is the observer's. Three things keep it down: programs with a plan stop
+  learning slots, records copy only each stage's used texture slots (a whole record is 7 KB), and
+  plans hold each resource's candidate slots as a list. The rest (47 points) must go before
+  drawing from the engine can be the default.
 
 N2.3's worth is the step N2.5 needs: mesh shaders' resources come from the draw state, not from
 the PS4 user data.
