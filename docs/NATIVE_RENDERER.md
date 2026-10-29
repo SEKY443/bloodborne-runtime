@@ -26,20 +26,18 @@ This page is the renderer's status and plan. The GPU interface it is built on is
 ## Progress
 
 Each bar has 20 blocks, one per 5% of the step's accepted scope. R5 is the mean of its seven
-steps. N6's work and N2's first two steps are on the `n6` branch (its
-[NATIVE_RENDERER.md](https://github.com/bloodborne-native/bloodborne-runtime/blob/n6/docs/NATIVE_RENDERER.md)
-has their sections); they reach main with N2.
+steps.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 76% `███████████████░░░░░` | N0, N1, N4 and N6 done; N5 the default, waiting for acceptance; N2 paused at 40% (the recompiler's CPU work first) |
+| **R5 · native renderer** | 76% `███████████████░░░░░` | N0, N1, N4 and N6 done; N5 the default, waiting for acceptance; N2 under way (the maintainer's focus from 2026-10-29) |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
-| N2 · shaders from the draw state, then ahead of time | 40% `████████░░░░░░░░░░░░` | 2 of 5 steps on the `n6` branch: the plan and the inventory. Paused; next: N2.3, mesh shaders built with bindings for their draw-state slots |
+| N2 · shaders from the draw state, then ahead of time | 40% `████████░░░░░░░░░░░░` | 2 of 5 steps: the plan and the inventory ([below](#n2-shaders-from-the-draw-state-then-ahead-of-time)). Next: N2.3, mesh shaders built with bindings for their draw-state slots |
 | N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N2. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 95% `███████████████████░` | M1–M4 implemented; native Metal the default since 0.9.0 RC 1. Next: acceptance (below) |
-| N6 · engine render boundary | 100% `████████████████████` | Done (re-scoped on 2026-10-28): the boundary found and observed, every input of a draw found from the draw state, mesh draws bound from it ([on the branch](https://github.com/bloodborne-native/bloodborne-runtime/blob/n6/docs/NATIVE_RENDERER.md#n6-the-engines-render-boundary)); taking the other draw kinds over moved to N2 |
+| N6 · engine render boundary | 100% `████████████████████` | Done (re-scoped on 2026-10-28): the boundary found and observed, every input of a draw found from the draw state, mesh draws bound from it ([below](#n6-the-engines-render-boundary)); taking the other draw kinds over moved to N2 |
 
 ## Now and next
 
@@ -54,17 +52,20 @@ In this order (the app's roadmap):
 
    Until then the app bundles MoltenVK and the Vulkan loader for the fallback only. After
    acceptance: decide whether the fallback leaves the macOS app.
-2. **The recompiler's CPU work** (bloodborne-recomp, the maintainer's choice of 2026-10-28 before
-   N2's next step, which can save at most 0.2–0.3 core of the draw-preparation threads). Calls
-   left to the translator are down from 69,600 a second to 9,400; what is left is memory ordering
-   kept only around the engine's synchronization, with the maintainer's conditions.
-3. **N2, shaders from the draw state, then ahead of time** (the `n6` branch, paused at 40%): N6
-   found every input of a draw in the engine's draw state and binds mesh draws from it; N2.3 builds
-   mesh shaders that read those slots instead of the PS4 user data, then the other draw kinds, then
-   the shaders converted once ahead of time.
-4. **N3, textures as objects.** Textures are still inferred from GPU memory by shadPS4's texture
-   cache. Until N2's last step, shaders are recompiled from GCN and converted to MSL the first time
-   the game uses them (the Metal backend caches built pipelines between sessions).
+2. **N2, shaders from the draw state, then native shaders ahead of time (now: the maintainer's
+   focus from 2026-10-29).** N6 found that each resource a shader reads comes from a fixed slot of
+   the engine's draw state. While shaders are converted GCN code they read the PS4 user data
+   themselves, so nothing is saved until they are built to read the draw state's slots instead: N2
+   does that, mesh draws first, then the other draw kinds, then the game's shaders built once
+   ahead of time on the player's device, as native shaders for each platform (Metal libraries on
+   macOS and iOS, SPIR-V for Vulkan). Its steps: [below](#n2-shaders-from-the-draw-state-then-ahead-of-time).
+3. **N3, textures as objects.** Textures are still inferred from GPU memory by shadPS4's texture
+   cache, and each one lives twice: in the game's memory and as a Metal texture. Taking them as
+   the objects the engine creates and releases removes the copies (about 1–1.5 GB in Cathedral
+   Ward), which smaller Macs and the iPhone need.
+4. **The recompiler's CPU work** (bloodborne-recomp): calls left to the translator are down from
+   69,600 a second to 9,400; what is left is memory ordering kept only around the engine's
+   synchronization, with the maintainer's conditions.
 
 ## What was measured
 
@@ -130,6 +131,155 @@ batch's depth bounds); the 7.5% draws geometry written into an upload ring.
 rasterizer, blend and depth-stencil states, eight colour targets and a depth target, and five
 graphics stages, each with 16 samplers, 128 textures and 14 constant buffers. Its known layout is
 in bloodborne-recomp's `annotations/structs.h`.
+
+## N6: the engine's render boundary
+
+R4 (bloodborne-recomp) named the boundary and described its objects:
+[the annotations](https://github.com/bloodborne-native/bloodborne-recomp/blob/main/docs/RECOMPILATION.md#annotations),
+with the draw state's layout in `annotations/structs.h`.
+
+### Steps
+
+| Step | Progress | State |
+|---|---|---|
+| N6.1 · the plan | 100% `████████████████████` | This section |
+| N6.2 · draws observed | 100% `████████████████████` | Every draw through the methods matched to its packets; topology, counts, index buffer and shaders agree |
+| N6.3 · output state observed | 100% `████████████████████` | Render and depth targets, blend, depth-stencil, rasterizer, viewport, scissor, stencil reference, blend colour and depth bounds agree |
+| N6.4 · resources observed | 100% `████████████████████` | The textures, samplers, constant buffers and vertex buffers the shaders read are the draw state's |
+| N6.5 · mesh draws from the draw state | 100% `████████████████████` | `CG::MeshRenderer::drawMesh`'s draws (65% of the methods' calls): the buffers' addresses from the engine's managers; each shader resource's slot in the draw state; their resources bound from the record behind `BB_RENDER_BOUNDARY=mesh` |
+
+N6 was re-scoped on 2026-10-28 (maintainer). Its last steps were to skip the draw-preparation
+workers' user-data walk for mesh draws and then take the other draw kinds over the same way. But
+converted GCN shaders read the user data themselves (the renderer uploads it with the flattened
+user data for every draw), so taking draws over saves nothing while the shaders are GCN code. The
+other draw kinds (the deferred lighting's quads, the upload ring's geometry; compute passes,
+render-target passes including the methods' own fast-clear resolves, and Scaleform) move to N2,
+which builds their shaders to read the draw state instead.
+
+### How a draw reaches the renderer
+
+- **Tags in the stream.** An entry hook on each draw method reads the draw state it is given into
+  a record (`gpu/shim/bbport_render_boundary.cpp`). A hook on libGnm's draw functions files the
+  record under a number and writes a three-dword PM4 NOP with that number just before the draw's
+  packet, for the method's own draw only (the libGnm call returning into the method): a method
+  that changes a render target first resolves the old one's fast clear with a draw of its own,
+  which keeps the packet path. The GPU ignores the NOP; the engine copies its recorded commands into the buffers it
+  submits, and the tag travels with them. The packet reader, meeting the tag and then the draw,
+  knows which record the draw is.
+- **One stream, one order.** A draw taken over is still recorded where its packet stands in the
+  stream: the reader hands the record to the native renderer at the tag instead of decoding the
+  registers. Waits, labels, flips, compute passes and every draw not taken over keep the packet
+  path in the same stream, so nothing needs reordering or extra synchronization.
+- **Translator and recompiled library.** The hooks rewrite the methods' first instructions, so
+  those 11 functions fail the recompiled library's byte check and run translated; everything they
+  call stays recompiled. The cost is measured with each step.
+
+### How the draw state maps onto the adapter
+
+- **Pipeline.** The five stages' shaders (each `CgShader`'s code address) are still GCN code,
+  recompiled and converted as today (N2 changes that); the input layout and the vertex strides
+  give the vertex input; topology, the rasterizer, blend and depth-stencil blocks and the render
+  and depth targets' formats give the rest of the pipeline description.
+- **Draw state.** Viewports, scissors, the blend colour, depth bounds and the stencil reference
+  map onto the adapter's `DrawState`.
+- **Bindings.** Each stage's samplers (S#), textures (T#) and constant buffers (V#s made from
+  address and size) are the resources the engine's binder copies into its descriptor tables.
+  Each resource a shader reads comes from a fixed slot of the draw state: per shader program
+  for textures, samplers and constant buffers, per vertex program and input layout for vertex
+  attributes. The observer learns these slot maps from the draws it sees.
+- **Vertex and index buffers.** 32 vertex buffers with strides and offsets; the index buffer with
+  its DXGI format and byte offset. The shader reads one V# per vertex attribute: the buffer's
+  address plus the attribute's offset in a vertex, with the buffer's stride.
+- **Buffer addresses.** Constant buffers, and the index and vertex buffers marked `managed`, are
+  placed by the context's managers, which look their GPU addresses up in tables of their own:
+  constant buffers through the manager at context + 0xb3c0 (`0x26ae840`), index and vertex
+  buffers through the one at context + 0xb6f8 (`0x26d0ff0`), each given the buffer's handle at
+  +0x18. The libGnm draw hook asks them (`runtime_guest_call` on the game's thread), after the
+  binder has run, so the addresses are this draw's.
+
+### What the observer found (N6.2 to N6.4)
+
+`BB_RENDER_BOUNDARY=observe` (not with `BB_DRAW_CENSUS=1`) compares each tagged draw with the
+registers the packet reader decoded, every 5 seconds in the log. In a two-minute run (M3 Pro,
+the test save, translator, no faults):
+
+- 3,006,657 draws went through the methods and were tagged; 3,004,963 (99.94%) reached the reader
+  with their tag. The 311,385 draw packets without one are the 295,520 libGnm draws made outside
+  the methods and the 15,906 fast-clear resolves the methods make themselves.
+- Every field compared agrees in every tagged draw: topology, counts, index type and start,
+  instances; the five stages' shaders; the colour and depth targets, the target mask, blend,
+  depth-stencil and stencil operations, clip and primitive setup, viewport 0, the stencil
+  reference, blend colour and depth bounds. The draw state's scissor applies only when its
+  rasterizer block enables the viewport scissor (`scan_mode[1]`, 738,110 draws); then it agrees
+  too. So for these draws the draw state alone says what the packets say.
+- The resources (2,839,214 draws whose resources the draw-preparation workers had read in time,
+  91%): every texture the shaders read is in the draw state's tables with the same T#
+  (16,422,346); samplers 99.98% (9,392,182 of 9,394,165; the rest are most likely empty slots the
+  binder fills with the engine's default sampler, not checked yet); every constant buffer matches
+  one of the stage's by size (23,447,710); every vertex buffer by stride (12,134,315), and by
+  address where the draw state places the buffers itself (11,721,677). The one buffer more per
+  draw is shadPS4's null buffer, not the game's.
+- The buffer addresses (N6.5, 2,606,707 prepared draws, no faults): with the managers' answers
+  every constant buffer (21,497,235), every vertex buffer (11,121,153) and every indexed draw's
+  first index (1,856,692) is at the address the draw state gives. Asking the managers on every
+  draw costs the game's threads time (31.0 FPS in that run).
+- The slot maps (N6.5, 218 programs and vertex layouts): every vertex attribute (368) and every
+  texture and constant buffer read comes from a fixed slot. 373 textures and 475 constant buffers
+  have exactly one; 57 textures and 72 buffers (shadPS4's null buffer among them) several slots
+  that always held the same value, so any of them gives the right resource. Samplers are often
+  identical across slots (50 one, 159 several); one fits no slot, most likely the engine's default
+  sampler for an empty slot (not checked yet).
+- Mesh draws from the draw state (N6.5, `BB_RENDER_BOUNDARY=mesh`): the textures, samplers,
+  constant buffers and vertex buffers of every mesh draw whose slot maps are known are replaced,
+  before the draw is recorded, by the ones the draw state names (T#s and S#s read from the
+  engine's objects, buffer addresses from its managers, each vertex attribute at its slot's
+  address plus its learnt offset). In two minutes 1,941,705 mesh draws took 50,453,065 resources
+  this way, none differing from the user data's; 35.7 FPS, no faults. Nothing is saved yet: the
+  workers still walk the user data and the hooks add their own cost.
+- Observing costs frame rate: 34.2–34.9 FPS with every comparison, 37.4–37.6 with the first
+  ones, 36.2–37.0 without it that day. It is a diagnostic only.
+
+## N2: shaders from the draw state, then ahead of time
+
+### Steps
+
+| Step | Progress | State |
+|---|---|---|
+| N2.1 · the plan | 100% `████████████████████` | This section |
+| N2.2 · the inventory | 100% `████████████████████` | The shaders use the user data only to locate their resources (below) |
+| N2.3 · mesh shaders from the draw state | 0% `░░░░░░░░░░░░░░░░░░░░` | Next: mesh draws' shaders built with fixed bindings for their draw-state slots (N6's slot maps), so neither the user-data walk nor its upload is needed for them; measured against today's path |
+| N2.4 · the other draw kinds | 0% `░░░░░░░░░░░░░░░░░░░░` | The other draw methods' draws, then the compute passes, render-target passes and Scaleform: each from its own boundary, or left to the packet path |
+| N2.5 · ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | The shaders converted once on the player's machine, keyed by the game's shader code, so none is compiled during play |
+
+### The inventory (N2.2)
+
+`BB_RENDER_BOUNDARY=observe` also keeps, per shader program, how its resources reach it (the
+shader recompiler's record of where each sharp's dwords come from), and with
+`BB_RENDER_BOUNDARY_INVENTORY=path` writes the counts per program to a CSV file. In two minutes in
+the test save's area (M3 Pro, 5,715,048 stage draws of prepared draws; tessellated and
+geometry-shader draws are not prepared by the workers and not counted):
+
+- 144 programs: 55 vertex, 89 pixel. 83 are used by mesh draws; 34 make 90% of the stage draws.
+- Their 1,132 sharps come from user-data registers (266) or from tables in memory the binder
+  wrote (866); none is built into a shader.
+- No program reads a user-data register for anything but its resources, and none reads
+  constants from the flattened user data. The only other buffer is the renderer's own (user clip
+  planes, in every vertex program).
+- At most 14 textures per program; at most 180 dwords of flattened user data.
+
+So a shader rebuilt with fixed bindings for the draw-state slots its resources come from (N6's
+slot maps) needs no user data at all: neither the walk nor the upload.
+
+### What N2 builds on
+
+- N6's record of each draw: the five stages' shaders (code addresses), the draw state's
+  textures, samplers, constant buffers and vertex buffers with their addresses, and the output
+  state.
+- N6's slot maps: per shader program which draw-state slot each resource it reads comes from, per
+  vertex program and input layout which slot and offset each vertex attribute reads.
+- Today's shader path: GCN code recompiled by the shader recompiler, its resources found by
+  walking the user data, converted to SPIR-V and on the Metal backend to MSL; built pipelines are
+  cached between sessions.
 
 ## The Metal backend today (N5)
 

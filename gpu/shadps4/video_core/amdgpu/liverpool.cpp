@@ -36,6 +36,7 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "bbport_write_log.h"
 #include "bbport_free_check.h"
+#include "bbport_render_boundary.h"
 #include "video_core/amdgpu/pm4_cmds.h"
 #include "video_core/amdgpu/pm4_selftest.h"
 #include "cp_decoder.h"
@@ -1541,6 +1542,10 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     break;
                 }
 
+                if (nop->data_block[0] == BbRenderBoundary::TagPayload) {
+                    BbRenderBoundary::NoteTag(header);
+                    break;
+                }
                 switch (nop->data_block[0]) {
                 case PM4CmdNop::PayloadType::PatchedFlip: {
                     // There is no evidence that GPU CP drives flip events by parsing
@@ -1710,6 +1715,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 const auto* prepared = draw_prep ? draw_prep->NextDraw() : nullptr;
+                if (BbRenderBoundary::Observing()) {
+                    BbRenderBoundary::ObserveDraw(header, regs, true, 0, false, prepared, gfx_reg_checksum);
+                }
                 if (PredicationSkips(header)) {
                     break;
                 }
@@ -1728,6 +1736,10 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 const auto* prepared = draw_prep ? draw_prep->NextDraw() : nullptr;
+                if (BbRenderBoundary::Observing()) {
+                    BbRenderBoundary::ObserveDraw(header, regs, true, draw_index_off->index_offset,
+                                                  false, prepared, gfx_reg_checksum);
+                }
                 if (PredicationSkips(header)) {
                     break;
                 }
@@ -1746,6 +1758,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 const auto* prepared = draw_prep ? draw_prep->NextDraw() : nullptr;
+                if (BbRenderBoundary::Observing()) {
+                    BbRenderBoundary::ObserveDraw(header, regs, false, 0, false, prepared, gfx_reg_checksum);
+                }
                 if (PredicationSkips(header)) {
                     break;
                 }
@@ -1765,6 +1780,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 }
                 if (!rasterizer) {
                     break;
+                }
+                if (BbRenderBoundary::Observing()) {
+                    BbRenderBoundary::ObserveDraw(header, regs, false, 0, true, nullptr, 0);
                 }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 rasterizer->ScopeMarker(
@@ -1811,6 +1829,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 }
                 if (!rasterizer) {
                     break;
+                }
+                if (BbRenderBoundary::Observing()) {
+                    BbRenderBoundary::ObserveDraw(header, regs, true, 0, true, nullptr, 0);
                 }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 rasterizer->ScopeMarker(
