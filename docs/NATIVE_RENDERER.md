@@ -31,10 +31,10 @@ steps.
 
 | Step | Progress | State, and the next action |
 |---|---|---|
-| **R5 · native renderer** | 80% `████████████████░░░░` | N0, N1, N4, N5 and N6 done; N2 at 70% (N2.3 done; N2.4: the draw methods' draws and most compute passes from the engine's state, opt-in) |
+| **R5 · native renderer** | 80% `████████████████░░░░` | N0, N1, N4, N5 and N6 done; N2 at 75% (N2.3 done; N2.4 at 80%: 92% of draw stages and 79% of dispatch stages without the walker, opt-in) |
 | N0 · scope | 100% `████████████████████` | Done: where the commands come from and where a frame's time goes |
 | N1 · frame planning | 100% `████████████████████` | Done: clears deferred into the next pass's load action |
-| N2 · shaders from the draw state, then ahead of time | 70% `██████████████░░░░░░` | 3 of 5 steps and nearly half of N2.4: the plan, the inventory, every draw method's draws and most compute passes from the engine's state (opt-in). Next: the rest of N2.4 (surface operations that walk tables, render-target passes, Scaleform) and the shaders ahead of time (N2.5) |
+| N2 · shaders from the draw state, then ahead of time | 75% `███████████████░░░░░` | 3 of 5 steps and most of N2.4: 92% of draw shader stages and 79% of dispatch stages run without the PS4 user data's walker (opt-in). Next: the rest of N2.4 (programs without a plan, surface operations and draws that walk tables) and the shaders ahead of time (N2.5) |
 | N3 · textures as objects | 0% `░░░░░░░░░░░░░░░░░░░░` | After N2. First action: trace where the engine creates and releases textures |
 | N4 · render adapter | 100% `████████████████████` | Done: A0–A6; the renderer records through the [adapter](RENDER_ADAPTER.md) |
 | N5 · Metal backend | 100% `████████████████████` | Accepted (the maintainer, 2026-10-29): M1–M4, native Metal the default since 0.9.0 RC 1 |
@@ -244,7 +244,7 @@ the test save, translator, no faults):
 | N2.1 · the plan | 100% `████████████████████` | This section |
 | N2.2 · the inventory | 100% `████████████████████` | The shaders use the user data only to locate their resources (below) |
 | N2.3 · mesh draws from the draw state | 100% `████████████████████` | Done, opt-in (`BB_RENDER_BOUNDARY=flat`): mesh draws' flattened user data from the draw state on the workers and the GPU thread, without the walker; exact; the observer still costs 42 CPU points ([below](#n23s-design-the-flat-buffer-from-the-draw-state)) |
-| N2.4 · the other draw kinds | 45% `█████████░░░░░░░░░░░` | The draw methods' other draws: done (88% of the shader stages of prepared draws). Compute passes: 79% of dispatch stages without the walker ([below](#n24-compute-passes)). Next: the surface operations that walk tables, the render-target passes and Scaleform |
+| N2.4 · the other draw kinds | 80% `████████████████░░░░` | The draw methods' other draws: done. Compute passes and the draws outside the methods: most read their sharps straight from the user-data registers, which needs no boundary ([below](#n24-the-other-draw-kinds-and-compute-passes)). Left: method draws whose program has no plan (6% of draw stages), the draws (2%) and surface operations (16% of dispatch stages) that walk tables |
 | N2.5 · ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | The shaders converted once on the player's machine, keyed by the game's shader code, so none is compiled during play |
 
 ### The inventory (N2.2)
@@ -324,8 +324,15 @@ The steps:
 N2.3's worth is the step N2.5 needs: mesh shaders' resources come from the draw state, not from
 the PS4 user data.
 
-### N2.4: compute passes
+### N2.4: the other draw kinds and compute passes
 
+**Draws outside the seven methods** (render-target passes, Scaleform; 8.6% of draw stages): 81% of
+their stages take every sharp from the user-data registers, so no walker runs and no boundary is
+needed. With the methods' draws filled from the draw state (85%), 92.5% of draw shader stages run
+without the walker; the rest are method draws whose program has no plan yet (5.9%) and draws
+outside the methods that walk tables (1.6%).
+
+**Compute passes.** 
 Two kinds of dispatch reach libGnm (counted with `BB_RENDER_BOUNDARY=flat-check`, Cathedral Ward):
 
 - **Through the resource binder (7%):** `CG::GraphicsContext::dispatch` and others call

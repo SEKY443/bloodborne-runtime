@@ -1030,6 +1030,9 @@ std::shared_ptr<const Plans> published_plans;
 std::atomic<u64> plans_generation{0};
 struct FlatTally {
     std::atomic<u64> stages, filled, no_record, no_plan, failed, sharps, differed, gpu_filled, gpu_failed;
+    // Of the stages without a record (or not a vertex or pixel stage of an untessellated draw): those
+    // whose program takes every sharp from the user-data registers (no walker runs for them).
+    std::atomic<u64> no_record_registers;
 } flat_tally;
 // The GPU thread's record of the draw it is drawing (ObserveDraw, flat mode).
 Record gpu_record;
@@ -1251,13 +1254,14 @@ int FillStage(const Record& r, Shader::HwStage stage) {
 void Report(u64 now) {
     if (flat_mode != FlatOff) {
         PublishPlans();
-        std::printf("Render boundary: flat (%s): stages %llu, from the draw state %llu, without a record %llu, "
-                    "without a plan %llu, a resource without a sharp %llu; sharps compared %llu, differing %llu; "
+        std::printf("Render boundary: flat (%s): stages %llu, from the draw state %llu, without a record %llu "
+                    "(registers only %llu), without a plan %llu, a resource without a sharp %llu; sharps compared %llu, differing %llu; "
                     "plans %zu; on the GPU thread from the draw state %llu, not %llu\n",
                     flat_mode == FlatFill ? "fill" : "check",
                     static_cast<unsigned long long>(flat_tally.stages.load()),
                     static_cast<unsigned long long>(flat_tally.filled.load()),
                     static_cast<unsigned long long>(flat_tally.no_record.load()),
+                    static_cast<unsigned long long>(flat_tally.no_record_registers.load()),
                     static_cast<unsigned long long>(flat_tally.no_plan.load()),
                     static_cast<unsigned long long>(flat_tally.failed.load()),
                     static_cast<unsigned long long>(flat_tally.sharps.load()),
@@ -1358,6 +1362,7 @@ bool WorkerFlat(const void* program, Shader::Info& info, Shader::HwStage stage) 
     const int s = FillStage(worker_record, stage);
     if (!worker_has_record || s < 0) {
         flat_tally.no_record.fetch_add(1, std::memory_order_relaxed);
+        flat_tally.no_record_registers.fetch_add(!info.srt_info.walker_func, std::memory_order_relaxed);
         return false;
     }
     const Plan* plan = WorkerPlan(program);
@@ -1394,6 +1399,7 @@ void WorkerCheckFlat(const void* program, Shader::Info& info, Shader::HwStage st
     const int s = FillStage(worker_record, stage);
     if (!worker_has_record || s < 0) {
         flat_tally.no_record.fetch_add(1, std::memory_order_relaxed);
+        flat_tally.no_record_registers.fetch_add(!info.srt_info.walker_func, std::memory_order_relaxed);
         return;
     }
     const Plan* plan = WorkerPlan(program);
