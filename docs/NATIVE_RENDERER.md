@@ -335,8 +335,10 @@ Two kinds of dispatch reach libGnm (counted with `BB_RENDER_BOUNDARY=flat-check`
   `dispatchIndirect` file it and tag the packet, and the GPU thread, which prepares dispatches,
   learns each compute program's slots from the walker and then fills it from the record
   (`GpuComputeFlat`). Exact: 3,514 sharps compared, 0 differing. A tenth of these dispatch
-  stages are filled so far; the rest are programs with a buffer that matches no slot yet (8
-  buffers), which keep the walker.
+  stages are filled; the rest belong to programs that also read a small engine-global buffer (3
+  or 4 records, at the same address in every dispatch) through a table in memory, not from the
+  compute state. Those keep the walker: filling it as a constant would go wrong unnoticed if the
+  engine moved it.
 - **The surface operations (93%):** `CG::SurfaceOps`' copies, fills and clears set their sharps
   in user data themselves and dispatch directly, with no compute state. 84% of their dispatch
   stages read every sharp from the user-data registers, which are already what the engine set:
