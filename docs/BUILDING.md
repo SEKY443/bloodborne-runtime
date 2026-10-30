@@ -143,7 +143,8 @@ alternating runs at the same place with the same save and settings: FPS, frame-t
 CPU (100% is one core) and the GPU thread's time per draw (`GPU thread us/draw` in the log).
 
 A healthy run on the maintainer's M3 Pro (18 GB), with the defaults (the Metal renderer, native
-1080p, no upscaler), reads 48.0–49.2 FPS standing in Iosefka's Clinic (about 1,660 draws a frame).
+1080p, no upscaler), reads 48.0–49.2 FPS standing in Iosefka's Clinic (about 1,660 draws a frame), with lossless
+texture compression (`BB_LAZY_TEXTURE_USAGE`, adapted from [MojahedAbushawish](https://github.com/MojahedAbushawish)'s work for [bloodborne_mac_port](https://github.com/Wooloomooloo2/bloodborne_mac_port)).
 
 Runs back to back are not equal: the second of a pair reads more GPU-thread time per draw as the
 Mac warms up. Run the base first; when the new build reads worse, run one reversed pair (new

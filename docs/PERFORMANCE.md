@@ -14,7 +14,7 @@ The default (native Metal, upscaler off, native 1080p):
 
 | Place | FPS |
 |---|---|
-| Iosefka's Clinic, standing (the test save; about 1,660 draws a frame) | 48.0–49.2 |
+| Iosefka's Clinic, standing (the test save; about 1,660 draws a frame) | 48.0–49.2 (36.3–36.7 without lossless texture compression, adapted from [MojahedAbushawish](https://github.com/MojahedAbushawish)'s work for [bloodborne_mac_port](https://github.com/Wooloomooloo2/bloodborne_mac_port)) |
 | A new game, 3 h 26 min of play by the maintainer | median 42.2; 37.2 or more 90% of the time |
 | Hunter's Dream | not measured |
 
