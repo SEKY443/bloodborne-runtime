@@ -30,5 +30,10 @@ int bb_boot_prepare(const char *game_dir, BbBoot *boot, char *error, size_t erro
 /* boot.bin as scripts/prepare.py writes it. 0 on success. */
 int bb_boot_write(const BbBoot *boot, const char *path);
 void bb_boot_free(BbBoot *boot);
+/* The AppContent profile scripts/content_profile.py writes as content.bin: the SKU (3: full, 1:
+ * trial) and the four USER_DEFINED_PARAM values of GAME_DIR/sce_sys/param.sfo. 0 on success. */
+typedef struct { uint32_t sku, user_params[4]; } BbContentProfile;
+int bb_content_profile(const char *game_dir, int full, BbContentProfile *out, char *error, size_t error_size);
+int bb_content_write(const BbContentProfile *profile, const char *path);
 /* The SHA-256 of `size` bytes as 64 hexadecimal digits. */
 void bb_sha256_hex(const void *data, size_t size, char out[65]);

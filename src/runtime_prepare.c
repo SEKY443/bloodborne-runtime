@@ -458,3 +458,52 @@ int bb_boot_write(const BbBoot *boot, const char *path) {
     ok = ok && fwrite(boot->image, 1, boot->size, f) == boot->size;
     return fclose(f) == 0 && ok ? 0 : -1;
 }
+
+/* ---- the AppContent profile (scripts/content_profile.py) ---- */
+
+/* param.sfo's integer value for `key`, or 0 when absent; -1 when the file is damaged. */
+static int sfo_int(Bytes sfo, const char *key, uint32_t *value) {
+    *value = 0;
+    if (!within(sfo, 0, 20) || memcmp(sfo.data, "\0PSF", 4)) return -1;
+    const uint32_t keys = u32(sfo.data + 8), values = u32(sfo.data + 12), count = u32(sfo.data + 16);
+    for (uint32_t i = 0; i < count; ++i) {
+        if (!within(sfo, 20 + (uint64_t)i * 16, 16)) return -1;
+        const uint8_t *entry = sfo.data + 20 + i * 16;
+        const uint32_t name = keys + u16(entry), size = u32(entry + 4), offset = values + u32(entry + 12);
+        const uint16_t format = u16(entry + 2);
+        if (name >= sfo.size || !memchr(sfo.data + name, 0, sfo.size - name)) return -1;
+        if (strcmp((const char *)sfo.data + name, key)) continue;
+        if (format != 0x404 || size != 4 || !within(sfo, offset, 4)) return -1; /* not an integer */
+        *value = u32(sfo.data + offset);
+    }
+    return 0;
+}
+
+int bb_content_profile(const char *game_dir, int full, BbContentProfile *out, char *error, size_t error_size) {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/sce_sys/param.sfo", game_dir);
+    Bytes sfo;
+    if (read_file(path, &sfo)) return fail(error, error_size, "cannot read %s", path);
+    out->sku = full ? 3 : 1;
+    int rc = 0;
+    for (int i = 0; i < 4 && !rc; ++i) {
+        char key[32];
+        snprintf(key, sizeof(key), "USER_DEFINED_PARAM_%d", i + 1);
+        if (sfo_int(sfo, key, &out->user_params[i])) rc = fail(error, error_size, "invalid user-defined parameter");
+    }
+    free((void *)sfo.data);
+    return rc;
+}
+
+int bb_content_write(const BbContentProfile *profile, const char *path) {
+    uint8_t bytes[28];
+    memcpy(bytes, "BBCONT01", 8);
+    const uint32_t fields[5] = {profile->sku, profile->user_params[0], profile->user_params[1],
+                                profile->user_params[2], profile->user_params[3]};
+    for (int i = 0; i < 5; ++i)
+        for (int b = 0; b < 4; ++b) bytes[8 + 4 * i + b] = (uint8_t)(fields[i] >> (8 * b));
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    const int ok = fwrite(bytes, 1, sizeof(bytes), f) == sizeof(bytes);
+    return fclose(f) == 0 && ok ? 0 : -1;
+}
