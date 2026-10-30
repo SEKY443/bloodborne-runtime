@@ -118,6 +118,14 @@ if (APPLE AND BB_ARCH STREQUAL "arm64")
     execute_process(COMMAND git -C ${CMAKE_SOURCE_DIR}/recomp rev-parse HEAD
                     OUTPUT_VARIABLE BB_RECOMP_VERSION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     file(WRITE ${CMAKE_BINARY_DIR}/recomp-kit/VERSION "${BB_RECOMP_VERSION}\n")
+    # The recompiler versions a library may come from and still load: every commit since the
+    # library interface (rc.h, BB_RECOMP_API_VERSION) last changed. The launcher keeps such a
+    # library in use and offers an update that compiles only what changed (build_library.py).
+    execute_process(COMMAND git -C ${CMAKE_SOURCE_DIR}/recomp log -1 --format=%H -- src/recomp/rc.h
+                    OUTPUT_VARIABLE BB_RECOMP_API_SINCE OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    execute_process(COMMAND git -C ${CMAKE_SOURCE_DIR}/recomp rev-list ${BB_RECOMP_API_SINCE}^..HEAD
+                    OUTPUT_VARIABLE BB_RECOMP_COMPATIBLE ERROR_QUIET)
+    file(WRITE ${CMAKE_BINARY_DIR}/recomp-kit/COMPATIBLE "${BB_RECOMP_COMPATIBLE}")
 endif()
 
 # The ATRAC9 decoder (third-party, compiled without this project's warnings).
@@ -230,7 +238,7 @@ if (APPLE)
         # The recompiler's kit (above), laid out as build_library.py expects it.
         set(BB_KIT Contents/Resources/game/recomp)
         install(TARGETS bb-recomp-scan bb-recomp-gen RUNTIME_DEPENDENCY_SET bb-payload RUNTIME DESTINATION ${BB_KIT}/bin)
-        install(FILES ${CMAKE_BINARY_DIR}/recomp-kit/VERSION DESTINATION ${BB_KIT})
+        install(FILES ${CMAKE_BINARY_DIR}/recomp-kit/VERSION ${CMAKE_BINARY_DIR}/recomp-kit/COMPATIBLE DESTINATION ${BB_KIT})
         install(FILES recomp/src/recomp/rc.h DESTINATION ${BB_KIT}/include/recomp)
         install(FILES recomp/src/cpu/bbcpu.h recomp/src/cpu/cpu_internal.h DESTINATION ${BB_KIT}/include/cpu)
         install(DIRECTORY ${BB_DEPS}/include/Zydis ${BB_DEPS}/include/Zycore DESTINATION ${BB_KIT}/include)
