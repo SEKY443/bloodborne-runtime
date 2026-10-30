@@ -1238,6 +1238,61 @@ bool PipelineCache::RefreshComputeKey() {
     return true;
 }
 
+// bbport: BB_SHADER_LOG=1 (N2.5): one line per new shader variant, with its conversion time; for a
+// program's first variant a summary of what it is specialized for, for a later one which parts
+// differ from the first (what an ahead-of-time conversion would have to predict).
+static bool ShaderLogOn() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_SHADER_LOG");
+        return env && env[0] == '1';
+    }();
+    return on;
+}
+
+static void LogVariant(u64 pgm_hash, Shader::HwStage stage, size_t perm_idx, double ms,
+                       const Shader::StageSpecialization& spec, const Shader::StageSpecialization* first) {
+    std::string what;
+    if (!first) {
+        u32 attrib_int = 0, image_other = 0, image_int = 0, image_storage = 0, image_srgb = 0, formatted = 0;
+        for (const auto& a : spec.vs_attribs) {
+            attrib_int += a.num_class != AmdGpu::NumberClass::Float;
+        }
+        for (const auto& i : spec.images) {
+            image_other += i.type != AmdGpu::ImageType::Color2D;
+            image_int += i.is_integer;
+            image_storage += i.is_storage;
+            image_srgb += i.is_srgb;
+        }
+        for (const auto& b : spec.buffers) {
+            formatted += b.is_formatted;
+        }
+        what = fmt::format("attribs {} ({} integer), images {} ({} not 2D, {} integer, {} storage, {} sRGB), buffers "
+                           "{} ({} formatted), samplers {}, fmasks {}",
+                           spec.vs_attribs.size(), attrib_int, spec.images.size(), image_other, image_int,
+                           image_storage, image_srgb, spec.buffers.size(), formatted, spec.samplers.size(),
+                           spec.fmasks.size());
+    } else {
+        what = "differs in";
+        auto part = [&](bool differs, const char* name) {
+            if (differs) {
+                what += ' ';
+                what += name;
+            }
+        };
+        part(spec.vs_attribs != first->vs_attribs, "attribs");
+        part(spec.runtime_info != first->runtime_info, "runtime-info");
+        part(spec.fetch_shader_data != first->fetch_shader_data, "fetch");
+        part(spec.fmasks != first->fmasks, "fmasks");
+        part(spec.start != first->start, "bindings");
+        part(spec.buffers != first->buffers, "buffers");
+        part(spec.images != first->images, "images");
+        part(spec.samplers != first->samplers, "samplers");
+    }
+    std::printf("Shader variant: %016llx stage %u variant %zu, %.1f ms; %s\n",
+                static_cast<unsigned long long>(pgm_hash), static_cast<unsigned>(stage), perm_idx, ms,
+                what.c_str());
+}
+
 VideoCore::Backend::ShaderHandle PipelineCache::CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
                                               const std::span<const u32>& code, size_t perm_idx,
                                               Shader::Backend::Bindings& binding, bool cached) {
@@ -1359,9 +1414,16 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         auto new_program = std::make_unique<Program>(hw_stage, sw_stage, params);
         auto start = binding;
         const size_t perm_idx = NewPermutationIndex(params.hash, 0, cached);
+        const auto compile_start = std::chrono::steady_clock::now();
         const auto module =
             CompileModule(new_program->info, runtime_info, params.code, perm_idx, binding, cached);
         auto spec = Shader::StageSpecialization(new_program->info, runtime_info, profile, start);
+        if (ShaderLogOn()) {
+            LogVariant(params.hash, hw_stage, perm_idx,
+                       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compile_start)
+                           .count(),
+                       spec, nullptr);
+        }
         const auto perm_hash = HashCombine(params.hash, perm_idx);
 
         if (cached) {
@@ -1412,7 +1474,14 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         perm_idx = NewPermutationIndex(params.hash, perm_idx, cached);
         perm_hash = HashCombine(params.hash, perm_idx);
         auto new_info = Shader::Info(hw_stage, sw_stage, params);
+        const auto compile_start = std::chrono::steady_clock::now();
         module = CompileModule(new_info, runtime_info, params.code, perm_idx, binding, cached);
+        if (ShaderLogOn()) {
+            LogVariant(params.hash, hw_stage, perm_idx,
+                       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compile_start)
+                           .count(),
+                       spec, program->modules.empty() ? nullptr : &program->modules.front().spec);
+        }
 
         if (cached) {
             RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);

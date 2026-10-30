@@ -245,7 +245,7 @@ the test save, translator, no faults):
 | N2.2 · the inventory | 100% `████████████████████` | The shaders use the user data only to locate their resources (below) |
 | N2.3 · mesh draws from the draw state | 100% `████████████████████` | Done, opt-in (`BB_RENDER_BOUNDARY=flat`): mesh draws' flattened user data from the draw state on the workers and the GPU thread, without the walker; exact; the observer still costs 42 CPU points ([below](#n23s-design-the-flat-buffer-from-the-draw-state)) |
 | N2.4 · the other draw kinds | 80% `████████████████░░░░` | The draw methods' other draws: done. Compute passes and the draws outside the methods: most read their sharps straight from the user-data registers, which needs no boundary ([below](#n24-the-other-draw-kinds-and-compute-passes)). Left: method draws whose program has no plan (6% of draw stages), the draws (2%) and surface operations (16% of dispatch stages) that walk tables |
-| N2.5 · ahead of time | 5% `█░░░░░░░░░░░░░░░░░░░` | Designed ([below](#n25-shaders-ahead-of-time)): a launcher step converts the game's shaders once; until a player runs it, shaders convert at first use as now. Next: measure how often a predicted variant is the one a draw needs |
+| N2.5 · ahead of time | 10% `██░░░░░░░░░░░░░░░░░░` | Designed and measured ([below](#n25-shaders-ahead-of-time)): converting shaders costs 0.4 s of a first play, building Metal pipelines 2.9 s (2.6 s as the level first appears). Next: a launcher step that builds pipelines, not only shaders |
 
 ### The inventory (N2.2)
 
@@ -379,9 +379,19 @@ attribute's number class, each buffer's stride and format, each image's view typ
 is an integer or writable image, the samplers, and settings such as instance step rates
 (`Shader::StageSpecialization`). The shader's code fixes some of these (an image's dimension) but
 not all. So the step converts each program with a predicted specialization, and a draw whose
-specialization differs converts at first use, as now. Its worth is how often the prediction is
-the variant a draw needs: measured in the runtime first, by predicting at each new variant and
-comparing.
+specialization differs converts at first use, as now. **Where the first-play time goes** (Cathedral Ward from an emptied test cache, `BB_SHADER_LOG=1`,
+M3 Pro): converting the game's shaders is cheap, 336 variants in 0.4 s (275 programs' first
+variants, 1.2 ms each on average, 61 later variants). The cost is building Metal pipelines from
+them: 589 pipelines in 2.9 s. 2.6 s of it falls in two frames as the level first appears (1.1 s
+and 1.5 s); during play it is a few hitches of 50 to 230 ms when new draws appear. Later sessions
+load the pipelines from the Metal binary archive. A pipeline also depends on draw state the
+shader does not carry (the vertex layout, the render targets' formats, blending), so what the step
+must build, or predict, is pipelines, not only shaders.
+
+**What tells variants apart:** of the 61 later variants, 37 differ only in their binding numbers,
+20 in images or buffers (an image's type or sRGB, a buffer's format), 5 in runtime settings and
+1 in vertex attributes. Of the 275 first variants, 172 use no integer vertex data, no image
+other than a 2D one, no writable and no sRGB image.
 
 ### What N2 builds on
 

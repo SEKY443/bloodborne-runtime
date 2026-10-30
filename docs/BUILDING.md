@@ -163,6 +163,10 @@ Off by default; their output stays in the ignored `out/` (it holds game addresse
   MTL_DEBUG_LAYER_ERROR_MODE=nslog`, then search the log for "being destroyed while still
   required". The window's BGRA8 sRGB drawable warning is noise; two older reports are known
   ([Stability](STABILITY.md#open)).
+- `BB_SHADER_LOG=1` (`vk_pipeline_cache.cpp`): one line per new shader variant (`Shader variant:`),
+  with its conversion time; for a program's first variant what it is specialized for, for a
+  later one which parts differ from the first. With an emptied test cache it shows what a first
+  play converts ([Native renderer](NATIVE_RENDERER.md#n25-shaders-ahead-of-time)).
 - `BB_DRAW_CENSUS=1` (`gpu/shim/bbport_draw_census.cpp`): counts the engine's draws at its render
   boundary (the functions named in bloodborne-recomp's `annotations/functions.tsv`) and every draw
   that reaches libGnm. Every 5 seconds it prints both counts and, for the draws that reach libGnm
