@@ -52,7 +52,12 @@ Changes taken from other ports of bbport, with thanks:
   (GPL-2.0-or-later): integrated and developed that Metal code further, including the pipeline-key
   split, shared blend rules, shadow check, Vulkan-to-Metal command layer and frame encoder
   ([Native renderer](NATIVE_RENDERER.md)); from `4565225`, instanced tessellated draws one
-  instance at a time. Our imported snapshot is `0b50589`, with `78b59f5` also adapted.
+  instance at a time. Our imported snapshot is `0b50589`, with `78b59f5` also adapted. Lossless
+  texture compression from
+  [**MojahedAbushawish**](https://github.com/MojahedAbushawish)'s lazy texture usages there
+  (`f151a8f`, #33, merged by Mark Hall in `4fcca1d`): textures are made without the ShaderWrite
+  and PixelFormatView usages until a view needs one, adapted to this renderer's images
+  (`VideoCore::Image::allowed_storage`).
 - [**Supermedo/bloodborne_pc**](https://github.com/Supermedo/bloodborne_pc) (GPL-2.0-or-later),
   the Windows fork:
   - `79d44f0` (Ambrose): per-user trophy event persistence (`src/runtime_trophies.c`), adapted

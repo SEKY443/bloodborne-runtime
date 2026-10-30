@@ -77,6 +77,7 @@ BB_GAME_DIR=/path/to/your/game bash run.sh
 | `BB_FPS=uncap\|90\|60\|30`, `BB_FPS_LIMIT` | Frame-rate mode and limit |
 | `BB_METAL_FRAME=1`, `=0` | The Metal renderer (default on Apple Silicon) or the MoltenVK fallback; Rosetta and `BB_VK_DRIVER` always take MoltenVK/Vulkan |
 | `BB_METAL_NATIVE_BOOT=1`, `=0` | Set by `run.sh` (and the launcher) with `BB_METAL_FRAME`: with `1` the window and device start without the Vulkan loader or MoltenVK |
+| `BB_LAZY_TEXTURE_USAGE=0` | Every texture made with the ShaderWrite and PixelFormatView usages, as before lossless texture compression (default on: they are added once, with a copy, when a view needs one; MojahedAbushawish's lazy usages from bloodborne_mac_port) |
 | `BB_GFX_BACKEND=metal`, `=vulkan` | The render adapter backend, set by `run.sh` with the renderer |
 | `BB_METAL_CAPS=compare`, `=moltenvk` | `compare` logs every difference between the Metal backend's answers to the renderer's start-up capability queries and MoltenVK's (`Metal caps:` lines); `moltenvk` uses MoltenVK's answers |
 | `BB_VULKAN_LOADER` | Path to the optional Vulkan loader on the MoltenVK path; `run.sh` sets it from `deps/` or the app bundle |
@@ -142,7 +143,7 @@ alternating runs at the same place with the same save and settings: FPS, frame-t
 CPU (100% is one core) and the GPU thread's time per draw (`GPU thread us/draw` in the log).
 
 A healthy run on the maintainer's M3 Pro (18 GB), with the defaults (the Metal renderer, native
-1080p, no upscaler), reads 38.2–39.6 FPS standing in Iosefka's Clinic (about 1,660 draws a frame).
+1080p, no upscaler), reads 48.0–49.2 FPS standing in Iosefka's Clinic (about 1,660 draws a frame).
 
 Runs back to back are not equal: the second of a pair reads more GPU-thread time per draw as the
 Mac warms up. Run the base first; when the new build reads worse, run one reversed pair (new

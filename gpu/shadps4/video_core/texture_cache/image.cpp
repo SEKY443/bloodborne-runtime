@@ -7,7 +7,9 @@
 #include <ranges>
 #include "bbport_metal_residency.h"
 #include "common/assert.h"
+#include <string>
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
+#include "video_core/renderer_vulkan/vk_bind_helper.h"
 #include "video_core/renderer_vulkan/vk_resource_backend.h"
 #include "video_core/renderer_vulkan/vk_state.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -21,6 +23,34 @@ namespace VideoCore {
 using namespace Vulkan;
 
 Common::IncrementalIdProvider<u64> Image::global_image_uid{};
+
+bool LazyTextureUsage() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_LAZY_TEXTURE_USAGE");
+        return !(env && env[0] == '0');
+    }();
+    return on;
+}
+
+namespace {
+constexpr u32 StorageBit = static_cast<u32>(Backend::ImageUse::Storage);
+
+bool HasStorage(const Backend::ImageDesc& desc) {
+    return (static_cast<u32>(desc.usage) & StorageBit) != 0;
+}
+
+// An sRGB format and its linear twin: Metal views one as the other without PixelFormatView.
+bool SrgbTwins(Backend::Format a, Backend::Format b) {
+    const auto linear = [](Backend::Format format) {
+        std::string name = Backend::FormatName(format);
+        if (const auto at = name.find("Srgb"); at != std::string::npos) {
+            name.replace(at, 4, "Unorm");
+        }
+        return name;
+    };
+    return linear(a) == linear(b);
+}
+} // namespace
 
 static Backend::ImageUse ImageUsage(const Backend::Capabilities& caps, const ImageInfo& info) {
     using Backend::ImageUse;
@@ -103,6 +133,15 @@ Image::Image(Backend::Device& device_,
     supported_samples = vk::SampleCountFlags(device->SupportedSampleCounts(desc));
     desc.samples = static_cast<u32>(LiverpoolToVK::NumSamples(info.num_samples, supported_samples));
 
+    // bbport: lazy usages (allowed_storage): a stencil plane is not copied by an upgrade, so
+    // images with one keep every usage from the start, as multisample and block images do.
+    allowed_storage = HasStorage(desc);
+    allowed_format_views = desc.mutable_format;
+    if (LazyTextureUsage() && !info.props.is_block && !info.props.has_stencil && desc.samples == 1) {
+        desc.usage = static_cast<Backend::ImageUse>(static_cast<u32>(desc.usage) & ~StorageBit);
+        desc.mutable_format = false;
+    }
+
     backing = &backing_images.emplace_back();
     backing->num_samples = info.num_samples;
     backing->desc = desc;
@@ -112,6 +151,63 @@ Image::Image(Backend::Device& device_,
                           Backend::FormatName(info.pixel_format), info.guest_address,
                           info.guest_size, info.resources.layers, info.resources.levels,
                           info.num_samples));
+    backing->handle = allocation.handle;
+    backing->native = allocation.native;
+    backing->size_bytes = allocation.size_bytes;
+    backing->backend_state = allocation.backend_state;
+}
+
+void Image::AllowedUsage(Backend::ImageDesc& desc) const {
+    if (allowed_storage) {
+        desc.usage = static_cast<Backend::ImageUse>(static_cast<u32>(desc.usage) | StorageBit);
+    }
+    desc.mutable_format = allowed_format_views;
+}
+
+bool Image::NeededUsage(const ImageViewInfo& view_info) const {
+    const Backend::ImageDesc& desc = backing->desc;
+    if (desc.samples > 1) {
+        return false;
+    }
+    if (view_info.is_storage && allowed_storage && !HasStorage(desc)) {
+        return true;
+    }
+    if (!allowed_format_views || desc.mutable_format) {
+        return false;
+    }
+    // The format ImageView makes the view in: a depth image's own for depth views.
+    if (info.props.is_depth && Vulkan::LiverpoolToVK::IsFormatDepthCompatible(view_info.format)) {
+        return false;
+    }
+    const Backend::Format format = device->SupportedFormat(view_info.format, Vulkan::FromVk(usage_flags));
+    return format != desc.format && !SrgbTwins(format, desc.format);
+}
+
+bool Image::HasAllowedUsage() const {
+    if (!backing) {
+        return true;
+    }
+    Backend::ImageDesc desc = backing->desc;
+    AllowedUsage(desc);
+    return desc == backing->desc;
+}
+
+void Image::ApplyNewUsage() {
+    if (!backing || backing_images.size() != 1 || !backing->image_view_ids.empty()) {
+        return;
+    }
+    Backend::ImageDesc desc = backing->desc;
+    AllowedUsage(desc);
+    if (desc == backing->desc) {
+        return;
+    }
+    device->DestroyImage(backing->handle); // never used yet
+    const auto allocation = device->CreateImage(
+        desc, fmt::format("Image {}x{}x{} {} {} {:#x}:{:#x} L:{} M:{} S:{}", info.size.width, info.size.height,
+                          info.size.depth, AmdGpu::NameOf(info.tile_mode), Backend::FormatName(info.pixel_format),
+                          info.guest_address, info.guest_size, info.resources.layers, info.resources.levels,
+                          info.num_samples));
+    backing->desc = desc;
     backing->handle = allocation.handle;
     backing->native = allocation.native;
     backing->size_bytes = allocation.size_bytes;
@@ -141,6 +237,18 @@ ImageView& Image::FindView(const ImageViewInfo& view_info, bool ensure_guest_sam
         backing->last_view = static_cast<u32>(std::distance(view_infos.begin(), it));
         const auto view_id = backing->image_view_ids[backing->last_view];
         return (*slot_image_views)[view_id];
+    }
+    // bbport: a view the backing lacks a usage for: the image gets every usage once (a copy).
+    // The texture binding helper never upgrades (Rasterizer::TexturesBindableOnHelper).
+    if (NeededUsage(view_info)) {
+        if (!Vulkan::BindHelper::OnHelper()) {
+            runtime->UpgradeUsage(this);
+            return FindView(view_info, false);
+        }
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true)) {
+            LOG_ERROR(Render_Vulkan, "texture usage upgrade needed on the binding helper");
+        }
     }
     const auto view_id = slot_image_views->insert(*device, view_info, *this);
     backing->image_view_infos.emplace_back(view_info);

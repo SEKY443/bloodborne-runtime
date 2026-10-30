@@ -37,6 +37,9 @@ enum ImageFlagBits : u32 {
 };
 DECLARE_ENUM_FLAG_OPERATORS(ImageFlagBits)
 
+/// bbport: lazy texture usages (Image::allowed_storage); BB_LAZY_TEXTURE_USAGE=0 turns them off.
+bool LazyTextureUsage();
+
 struct Image {
     explicit Image(Backend::Device& device,
                    VideoCore::Backend::Transfers& runtime, Common::SlotVector<ImageView>& slot_image_views,
@@ -139,6 +142,22 @@ public:
 
     vk::ImageUsageFlags usage_flags;
     vk::FormatFeatureFlags2 format_features;
+    /// bbport: the storage and format-view usages the image may need (after Mojahed Abushawish's
+    /// lazy usages for bloodborne_mac_port, #33). Apple GPUs compress a texture losslessly only
+    /// without them, so single-sample colour and depth-only backings are made without them and
+    /// get both, once, when a storage view or a view in another pixel format needs one
+    /// (NeededUsage, Transfers::UpgradeUsage).
+    bool allowed_storage = false;
+    bool allowed_format_views = false;
+    /// `desc` with every usage the image may need.
+    void AllowedUsage(Backend::ImageDesc& desc) const;
+    /// Whether a view `view_info` of the current backing needs a usage the backing lacks.
+    [[nodiscard]] bool NeededUsage(const ImageViewInfo& view_info) const;
+    /// A new image (no contents, no views yet) a binding needs every usage for: its backing made
+    /// again with them, without the copy an upgrade makes.
+    void ApplyNewUsage();
+    /// Whether the current backing has every usage the image may need (upgraded, or never lazy).
+    [[nodiscard]] bool HasAllowedUsage() const;
     /// One allocation of the image (another sample count gets another backing), created through
     /// the render adapter (docs/RENDER_ADAPTER.md, A2).
     struct BackingImage {

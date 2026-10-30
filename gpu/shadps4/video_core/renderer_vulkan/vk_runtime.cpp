@@ -1165,6 +1165,9 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
         auto new_desc = backing->desc;
         new_desc.samples =
             static_cast<u32>(LiverpoolToVK::NumSamples(num_samples, image->supported_samples));
+        if (new_desc.samples > 1) {
+            image->AllowedUsage(new_desc); // bbport: multisample backings are never upgraded
+        }
 
         new_backing = &backing_images.emplace_back();
         new_backing->num_samples = num_samples;
@@ -1230,6 +1233,63 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
     }
 
     backing = new_backing;
+}
+
+// bbport: lazy texture usages, after Mojahed Abushawish's for bloodborne_mac_port (#33): Apple
+// GPUs compress a texture losslessly only without the ShaderWrite and PixelFormatView usages.
+// The old backing stays (unused) until the image goes: draws already handed to the recording
+// thread may still name it.
+void Runtime::UpgradeUsage(VideoCore::Image* image) {
+    BeforeImageAccess();
+    VideoCore::Image::BackingImage* old_backing = image->backing;
+    if (!old_backing || old_backing->num_samples > 1) {
+        return;
+    }
+    ResolvePendingClear(image, ClearResolveReason::BackingSwap); // into the old backing
+    const auto& info = image->info;
+    auto new_desc = old_backing->desc;
+    image->AllowedUsage(new_desc);
+
+    scheduler.EndRendering();
+    Transit(image, vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits2::eCopy,
+            vk::AccessFlagBits2::eTransferRead);
+    const auto src_image = image->GetImage();
+
+    auto& new_backing = image->backing_images.emplace_back();
+    new_backing.num_samples = old_backing->num_samples;
+    new_backing.desc = new_desc;
+    const auto allocation = image->device->CreateImage(
+        new_desc, fmt::format("Image {}x{}x{} {} {} {:#x}:{:#x} L:{} M:{} (all usages)", info.size.width,
+                              info.size.height, info.size.depth, AmdGpu::NameOf(info.tile_mode),
+                              Backend::FormatName(info.pixel_format), info.guest_address,
+                              info.guest_size, info.resources.layers, info.resources.levels));
+    new_backing.handle = allocation.handle;
+    new_backing.native = allocation.native;
+    new_backing.size_bytes = allocation.size_bytes;
+    new_backing.backend_state = allocation.backend_state;
+    old_backing->num_samples = 0; // never chosen again (SetBackingSamples looks for a sample count)
+    image->backing = &new_backing;
+
+    Transit(image, vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits2::eCopy,
+            vk::AccessFlagBits2::eTransferWrite);
+    FlushBarriers();
+    boost::container::small_vector<vk::ImageCopy, 16> regions;
+    const bool is_3d = new_desc.type == Backend::ImageType::Image3D;
+    const vk::ImageAspectFlags aspect = image->aspect_mask & ~vk::ImageAspectFlagBits::eStencil;
+    for (u32 level = 0; level < new_desc.levels; ++level) {
+        vk::ImageCopy region{};
+        region.srcSubresource = {aspect, level, 0, is_3d ? 1u : new_desc.layers};
+        region.dstSubresource = region.srcSubresource;
+        region.extent = vk::Extent3D(std::max(new_desc.width >> level, 1u), std::max(new_desc.height >> level, 1u),
+                                     is_3d ? std::max(new_desc.depth >> level, 1u) : 1u);
+        regions.push_back(region);
+    }
+    scheduler.Record([enc = encoder, src_image, dst_image = image->GetImage(), regions](vk::CommandBuffer cmdbuf) {
+        enc->CopyImage(cmdbuf, src_image, dst_image, regions, vk::ImageLayout::eTransferSrcOptimal,
+                       vk::ImageLayout::eTransferDstOptimal);
+    });
+    BbStats::texture_upgrades.fetch_add(1, std::memory_order_relaxed);
+    BbStats::texture_upgrade_bytes.fetch_add(new_backing.size_bytes, std::memory_order_relaxed);
 }
 
 bool Runtime::IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 size,

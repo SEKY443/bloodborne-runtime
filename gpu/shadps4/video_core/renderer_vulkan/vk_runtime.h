@@ -143,6 +143,7 @@ public:
 
     void SetBackingSamples(VideoCore::Image* image, u32 num_samples,
                            bool copy_backing = true) override;
+    void UpgradeUsage(VideoCore::Image* image) override;
 
     void AccessBuffer(const VideoCore::Buffer* handle, u64 offset, u64 size,
                       vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access);

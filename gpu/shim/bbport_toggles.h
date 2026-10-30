@@ -193,6 +193,9 @@ inline std::atomic<std::uint64_t> vk_image_bytes{0};
 inline std::atomic<std::uint64_t> residency_alloc_bytes{0}, residency_unused_bytes{0};
 /// The texture cache collector: the usage it compares, the mark it starts at, images it freed.
 inline std::atomic<std::uint64_t> gc_used_bytes{0}, gc_trigger_bytes{0}, gc_freed_images{0};
+/// bbport: lazy texture usages: images given their storage and format-view usages after creation
+/// (Runtime::UpgradeUsage, one copy each), and the bytes of the backings made for them.
+inline std::atomic<std::uint64_t> texture_upgrades{0}, texture_upgrade_bytes{0};
 /// Its critical mark (images used a moment ago evicted past it): VRAM copies of the game's
 /// memory stop short of it and yield first (BufferCache::VramPromotionsPaused, LayerProcessIdle).
 inline std::atomic<std::uint64_t> gc_critical_bytes{0};

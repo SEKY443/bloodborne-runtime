@@ -371,6 +371,12 @@ static void PrintMemory() {
                 (unsigned long long)(BbStats::gc_trigger_bytes.load() >> 20),
                 (unsigned long long)BbStats::gc_freed_images.exchange(0),
                 (unsigned long long)BbStats::gc_kept_images.exchange(0));
+    // bbport: lazy texture usages (VideoCore::Image::allowed_storage).
+    if (const u64 upgrades = BbStats::texture_upgrades.exchange(0)) {
+        std::printf("Texture usage upgrades: %llu (%llu MiB of new backings)\n",
+                    static_cast<unsigned long long>(upgrades),
+                    static_cast<unsigned long long>(BbStats::texture_upgrade_bytes.exchange(0) >> 20));
+    }
 #if BB_METAL_BACKEND
     // The Metal renderer: what the Metal device holds (MoltenVK's objects included).
     unsigned long long metal_used = 0, metal_budget = 0;

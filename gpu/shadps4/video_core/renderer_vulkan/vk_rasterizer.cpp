@@ -2490,8 +2490,9 @@ bool Rasterizer::TexturesBindableOnHelper(const Shader::Info& stage,
             image_id = depth_image_id;
             image = &texture_cache.GetImage(image_id);
         }
-        if (image->binding.needs_rebind || image->pending_clear ||
-            !texture_cache.IsUpToDate(image_id) ||
+        // bbport: a lazy usage upgrade (Runtime::UpgradeUsage) runs on the GPU thread only.
+        if (image->NeededUsage(entry.found_desc.view_info) || image->binding.needs_rebind ||
+            image->pending_clear || !texture_cache.IsUpToDate(image_id) ||
             scene_targets->Tracks(image->image_uid) || image->prompt_icon || image->prompt_atlas ||
             (upscaler->Enabled() && upscaler->RedirectsSampled(image_id))) {
             return false;

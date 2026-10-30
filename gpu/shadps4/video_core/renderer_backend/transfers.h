@@ -74,6 +74,9 @@ public:
                                   ClearColor& value) = 0;
 
     virtual void SetBackingSamples(Image* image, u32 num_samples, bool copy_backing = true) = 0;
+    /// bbport: lazy texture usages (Image::allowed_storage): a new backing with every usage the
+    /// image may need, the current one's contents copied into it (all levels and layers).
+    virtual void UpgradeUsage(Image* image) = 0;
 
     /// Declared uses; the backend places the barriers (FlushBarriers records pending ones).
     /// True when the use needs a barrier.

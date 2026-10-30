@@ -675,6 +675,11 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 
 ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     const auto new_image_id = slot_images.insert(device, runtime, slot_image_views, info);
+    // bbport: the larger image keeps the usages the old one was given (lazy texture usages; the
+    // game grows mip chains a level at a time).
+    if (slot_images[image_id].HasAllowedUsage()) {
+        slot_images[new_image_id].ApplyNewUsage();
+    }
     RegisterImage(new_image_id);
 
     auto& src_image = slot_images[image_id];
@@ -798,6 +803,11 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     // Create and register a new image
     if (!image_id) {
         image_id = slot_images.insert(device, runtime, slot_image_views, info);
+        // bbport: a texture first bound as storage or in another pixel format gets those usages
+        // now rather than an upgrade copy at its first view (lazy texture usages).
+        if (auto& created = slot_images[image_id]; created.NeededUsage(desc.view_info)) {
+            created.ApplyNewUsage();
+        }
         RegisterImage(image_id);
     }
 
