@@ -376,8 +376,13 @@ static void guest_call_sites(uint64_t out[3]) {
     for (int i=0;i<400 && found<3 && (uintptr_t)(sp+i+1)<=stack_hi;++i) if (sp[i]>=text_lo && sp[i]<text_hi) out[found++]=sp[i]-text_lo;
 }
 void runtime_wait_note(int kind, uint64_t ns) {
+    /* Opt-in (BB_WAIT_STATS=1, or BB_WAIT_LOG): the stack scan and the shared table cost 3-10% of
+     * the game's worker threads on an iPhone, and the frame statistics are on for every player. */
     static int enabled=-1;
-    if (enabled<0) enabled=getenv("BB_FRAME_STATS")!=NULL;
+    if (enabled<0) {
+        const char *on=getenv("BB_WAIT_STATS"), *log=getenv("BB_WAIT_LOG");
+        enabled=(on && on[0]=='1') || (log && *log);
+    }
     if (!enabled) return;
     if (!wait_tid) wait_tid=(int)bb_gettid();
     uint64_t sites[3];

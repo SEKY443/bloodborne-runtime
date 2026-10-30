@@ -93,6 +93,7 @@ and on Apple's tile-based GPUs each new pass reloads its attachments.
 | Change | Renderer, upscaler, place | Effect |
 |---|---|---|
 | Lossless texture compression: textures made without the ShaderWrite and PixelFormatView usages until a view needs one (`BB_LAZY_TEXTURE_USAGE`, from MojahedAbushawish's work for bloodborne_mac_port) | Metal, Iosefka's Clinic, none (three pairs) | 48.0–49.2 FPS against 36.3–36.7 (+33%); 4 upgrades a run |
+| The GPU command processor and the recorders at the user-interactive QoS class (`BB_THREAD_QOS`), and the waits' call sites collected only on request (`BB_WAIT_STATS`) | iPhone 17 Pro Max, capped at 30, 2-minute runs (two pairs); Mac, Iosefka's Clinic (three pairs) | iPhone: 29.8–30.0 FPS held through the throttled second minute (lowest 29.0) against 26.9–27.8 (lowest 23.3); Mac: the same FPS (49.2–49.4 against 49.0–49.3), 5–10 CPU points less |
 | The native Metal renderer | Iosefka's Clinic, none | 38.2–39.6 FPS against 30.6 on MoltenVK |
 | The Metal renderer's first version (`BB_METAL_FRAME=1`) | Hunter's Dream, FSR 3.1 Balanced | 65.5 and 61.7 FPS against 58.0 and 58.1 on MoltenVK; p90 16–18 ms against 19–20 |
 | MetalFX encoded on the native frame's command buffer instead of the export bridge | Metal, MetalFX, copied save (one pair) | 34.5 against 30.8 mean FPS |

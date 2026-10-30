@@ -29,6 +29,15 @@ repository: bloodborne-mac's `docs/ARCHITECTURE.md` ("Where code lives").
   the cores slow down. The hottest die sensor (the FPS counter and the `Process:` log line) climbs
   from about 52 °C to 73 °C, and the drop comes there, the die then cooling to about 67 °C. The
   system's thermal state stays "nominal" throughout: it is not the signal to watch.
+- **Capped at 30 FPS, the phone throttled, it holds 30** with the GPU command processor and the
+  recorders on the performance cores (user-interactive QoS: they had run on the efficiency cores
+  about 78% of the time) and the waits' call sites no longer collected for every player (that
+  stack scan cost the game's worker threads 3–10%): 29.8–30.0 FPS in both minutes of 2-minute
+  runs, the lowest 5-second window 29.0, against 26.9–27.8 and 23.3 before (two alternating
+  pairs, one minute apart, the die at 64–69 °C). A Time Profiler trace of the throttled game
+  showed where the time went: the five GX workers about a third in semaphore waits and wakes,
+  the GPU command processor 20% waiting for host copies, the recorder in system calls from its
+  copies and draws.
 - **Lossless texture compression** (textures made without the ShaderWrite and PixelFormatView
   usages until a view needs one, adapted from
   [MojahedAbushawish](https://github.com/MojahedAbushawish)'s work for Wooloomooloo2's

@@ -913,6 +913,7 @@ void Scheduler::RecorderThread(std::stop_token stoken, u32 index) {
         std::snprintf(name, sizeof(name), "bb:VkRecorder%u", index);
         Common::SetCurrentThreadName(name);
     }
+    BbThreads::MakeCritical();
     Worker& worker = *workers[index];
     std::vector<std::unique_ptr<RecordChunk>> ordered;
     const auto has_work = [&] {

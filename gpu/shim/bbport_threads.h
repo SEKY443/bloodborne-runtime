@@ -8,6 +8,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdlib>
 #include <sched.h>
 #include <sys/resource.h>
 #include <thread>
@@ -40,6 +41,19 @@ inline void MakeBackground() {
     sched_param param{};
     if (sched_setscheduler(0, SCHED_IDLE, &param) != 0) {
         setpriority(PRIO_PROCESS, static_cast<id_t>(gettid()), 19);
+    }
+#endif
+}
+
+/// The calling thread is on the frame's critical path (the GPU command processor, the recorders):
+/// on Apple platforms the user-interactive QoS class, so the scheduler keeps it on the performance
+/// cores (an iPhone ran these threads on its efficiency cores about 78% of the time). Elsewhere
+/// nothing changes. BB_THREAD_QOS=0: the default class, as before.
+inline void MakeCritical() {
+#ifdef __APPLE__
+    const char* env = std::getenv("BB_THREAD_QOS");
+    if (!(env && env[0] == '0')) {
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
     }
 #endif
 }

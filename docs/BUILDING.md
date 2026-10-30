@@ -87,6 +87,8 @@ BB_GAME_DIR=/path/to/your/game bash run.sh
 | `BB_MODS_DIR`, `BB_MODS_ENABLED=0` | Mods folder, or no mods |
 | `BB_PATCHES_DIR` | Third-party patches folder |
 | `BB_FRAME_STATS=1` | Frame statistics in the log |
+| `BB_WAIT_STATS=1` | With the frame statistics, where the game's threads wait (mutexes, condition variables, semaphores, sleeps) by call site; off by default (it costs the waiting threads 3–10%); also on with `BB_WAIT_LOG=FILE` |
+| `BB_THREAD_QOS=0` | The GPU command processor and the recorders at the default QoS class, as before (default: user-interactive, so Apple platforms keep them on the performance cores) |
 | `BB_SKIP_GAME_CHECK=1` | Skip the game folder check |
 
 Switches for single features are listed where the feature is described in
