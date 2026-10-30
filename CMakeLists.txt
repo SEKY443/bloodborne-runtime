@@ -278,6 +278,9 @@ if (BUILD_TESTING)
     target_link_libraries(pad-test PRIVATE bb-c PkgConfig::SDL3)
     add_executable(file-mods-test EXCLUDE_FROM_ALL tests/test_file_mods.c src/platform.c)
     target_link_libraries(file-mods-test PRIVATE bb-c)
+    # The runtime's own preparation of the executable (src/runtime_prepare.c), checked against
+    # scripts/prepare.py's boot.bin byte for byte.
+    add_executable(bb-prepare EXCLUDE_FROM_ALL tools/bb_prepare.c src/runtime_prepare.c)
     add_executable(content-test EXCLUDE_FROM_ALL tests/test_content.c src/runtime_content.c
                    src/platform.c)
     target_link_libraries(content-test PRIVATE bb-c)
