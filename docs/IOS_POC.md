@@ -22,12 +22,21 @@ repository: bloodborne-mac's `docs/ARCHITECTURE.md` ("Where code lives").
 | Current recompiler, host `tanf`/`atan2f`/`wmemset`, the 730 functions of the jump-table change left to the interpreter | 23.1 |
 | Those 730 functions recompiled too, after the generator fix (recomp `f0f4eb0`) | 30.0–30.7 |
 | The interpreter looking up recompiled code at block starts only (recomp `e86a05d`) | 32.7–35.6 |
+| Current `main` (2026-10-30: runtime `0dd9ff4`, the library rebuilt with the jump-table work), lossless texture compression on; the first 20 s after load | 37.8–42.6 |
 
 - **Heat:** after about 40 s in the level the frame rate falls by about 30% (to 22.5 before the
   last change, 24.1 after it) at the same CPU use (about 375% of one core) and the same draws:
   the cores slow down. The hottest die sensor (the FPS counter and the `Process:` log line) climbs
   from about 52 °C to 73 °C, and the drop comes there, the die then cooling to about 67 °C. The
   system's thermal state stays "nominal" throughout: it is not the signal to watch.
+- **Lossless texture compression** (textures made without the ShaderWrite and PixelFormatView
+  usages until a view needs one, adapted from
+  [MojahedAbushawish](https://github.com/MojahedAbushawish)'s work for Wooloomooloo2's
+  [bloodborne_mac_port](https://github.com/Wooloomooloo2/bloodborne_mac_port), #33), four
+  alternating 40-second runs, one minute apart: 37.8–39.2 FPS against 33.7–35.8 once gameplay
+  settles (+10%), 27.2–28.9 against 25.8–27.3 once the phone throttles (+5%); 4 upgrades a run.
+  The Mac gains +33%: the iPhone is bound by its CPU and its heat more than by GPU bandwidth.
+  With one minute between runs the phone throttles after about 20 s in the later runs.
 - **MetalFX** (640×360 upscaled to 960×540, `upscaler=metalfx`, `preset=1`, a `patches.bin` made
   for 640×360), one 90-second run against native 960×540 from a cool phone: 33.1–34.4 FPS before
   throttling against 29.1–34.8, the drop about 20 s later (about 65 s in the level against 45),
