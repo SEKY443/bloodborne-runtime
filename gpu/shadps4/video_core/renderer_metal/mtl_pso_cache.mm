@@ -222,14 +222,33 @@ PsoCache::PsoCache(Device& device_, std::filesystem::path cache_dir)
     @autoreleasepool {
         std::error_code ec;
         std::filesystem::create_directories(cache_dir, ec);
+        // bbport: Metal can end the process loading a damaged archive (std::bad_alloc thrown
+        // inside its own dispatch block, which terminates: an iPhone with a file an older build
+        // wrote), so nothing here can catch it. A marker kept while loading says so on the next
+        // start, which then begins a new archive.
+        const auto loading_marker = std::filesystem::path{archive_path}.concat(".loading");
+        if (std::filesystem::exists(loading_marker, ec)) {
+            LOG_WARNING(Render, "Metal binary archive {}: the last start ended while loading it, "
+                                "starting a new one",
+                        archive_path.string());
+            std::filesystem::remove(archive_path, ec);
+            std::filesystem::remove(loading_marker, ec);
+        }
         const bool exists = std::filesystem::exists(archive_path, ec);
         MTLBinaryArchiveDescriptor* descriptor = [MTLBinaryArchiveDescriptor new];
         if (exists) {
             descriptor.url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:archive_path.c_str()]];
         }
         NSError* error = nil;
+        if (exists) {
+            std::FILE* marker = std::fopen(loading_marker.c_str(), "w");
+            if (marker) {
+                std::fclose(marker);
+            }
+        }
         id<MTLBinaryArchive> archive =
             [impl->mtl_device newBinaryArchiveWithDescriptor:descriptor error:&error];
+        std::filesystem::remove(loading_marker, ec);
         if (archive && exists) {
             archive_loaded = true;
         } else if (!archive && exists) {
