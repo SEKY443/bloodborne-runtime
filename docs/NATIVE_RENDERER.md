@@ -245,7 +245,7 @@ the test save, translator, no faults):
 | N2.2 · the inventory | 100% `████████████████████` | The shaders use the user data only to locate their resources (below) |
 | N2.3 · mesh draws from the draw state | 100% `████████████████████` | Done, opt-in (`BB_RENDER_BOUNDARY=flat`): mesh draws' flattened user data from the draw state on the workers and the GPU thread, without the walker; exact; the observer still costs 42 CPU points ([below](#n23s-design-the-flat-buffer-from-the-draw-state)) |
 | N2.4 · the other draw kinds | 80% `████████████████░░░░` | The draw methods' other draws: done. Compute passes and the draws outside the methods: most read their sharps straight from the user-data registers, which needs no boundary ([below](#n24-the-other-draw-kinds-and-compute-passes)). Left: method draws whose program has no plan (6% of draw stages), the draws (2%) and surface operations (16% of dispatch stages) that walk tables |
-| N2.5 · ahead of time | 0% `░░░░░░░░░░░░░░░░░░░░` | The shaders converted once on the player's machine, keyed by the game's shader code, so none is compiled during play |
+| N2.5 · ahead of time | 5% `█░░░░░░░░░░░░░░░░░░░` | Designed ([below](#n25-shaders-ahead-of-time)): a launcher step converts the game's shaders once; until a player runs it, shaders convert at first use as now. Next: measure how often a predicted variant is the one a draw needs |
 
 ### The inventory (N2.2)
 
@@ -355,6 +355,33 @@ Two kinds of dispatch reach libGnm (counted with `BB_RENDER_BOUNDARY=flat-check`
 
 So 79% of dispatch stages run without the walker; the surface operations that walk tables and the
 buffers without a slot are what is left.
+
+### N2.5: shaders ahead of time
+
+**The decision (maintainer, 2026-10-30):** a launcher step, like the recompiled-code build,
+converts the game's shaders once into the shader cache. Converting at first use stays the default
+until the player runs it, and stays the fallback for anything the step did not convert.
+
+**What there is to convert** (the player's 1.09 dump):
+
+- The shader bundles (`dvdroot_ps4/shader/*.shaderbnd.dcx`: DCX, DEFLATE, then BND4 archives)
+  hold 15,300 files, one shader stage each (`.vpo`, `.ppo`, `.gpo`, `.dpo`, `.hpo`, `.cpo`). By
+  the program hash the cache is keyed with (the `shader_hash` of the `OrbShdr` block Sony's
+  toolchain appends to a shader's code), they are 3,382 programs: 1,730 vertex, 1,346 pixel, 167
+  domain, 62 geometry, 39 hull and 38 compute.
+- The executable holds 5,469 more programs of its own (the engine's built-in passes, Scaleform and
+  middleware among them).
+- A long play's cache (the maintainer's, several levels) held 533 programs in 845 variants: 423
+  from the bundles, 110 from the executable. 364 of them (68%) only ever needed one variant.
+
+**Variants are the hard part.** A converted shader is specialized for its draw: each vertex
+attribute's number class, each buffer's stride and format, each image's view type and whether it
+is an integer or writable image, the samplers, and settings such as instance step rates
+(`Shader::StageSpecialization`). The shader's code fixes some of these (an image's dimension) but
+not all. So the step converts each program with a predicted specialization, and a draw whose
+specialization differs converts at first use, as now. Its worth is how often the prediction is
+the variant a draw needs: measured in the runtime first, by predicting at each new variant and
+comparing.
 
 ### What N2 builds on
 
