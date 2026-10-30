@@ -1048,26 +1048,39 @@ bool WritableOnly(const std::bitset<BufferSlots>& bits) {
     return bits.any();
 }
 
+// Why learnt programs have no plan (the last PublishPlans): a resource of each kind with no
+// candidate slot, or a buffer whose V# dwords the walker never gave.
+struct Incomplete {
+    u64 image = 0, sampler = 0, buffer = 0, buffer_raw = 0;
+} incomplete;
+
 void PublishPlans() {
     auto plans = std::make_shared<Plans>();
+    Incomplete why;
     for (const auto& [key, map] : slot_maps) {
         if (key.second != 0 || map.draws < PlanDraws) {
             continue; // vertex attribute maps, or not learnt long enough
         }
         Plan plan;
-        bool complete = true;
+        bool images = true, samplers = true, buffers = true, raw = true;
         for (const auto& bits : map.images) {
-            complete = complete && bits.any();
+            images = images && bits.any();
         }
         for (const auto& bits : map.samplers) {
-            complete = complete && bits.any();
+            samplers = samplers && bits.any();
         }
         for (u32 k = 0; k < map.buffers.size(); ++k) {
             const auto& bits = map.buffers[k];
             const bool known = k < map.buffer_raw_known.size() && map.buffer_raw_known[k];
-            complete = complete && (bits.all() || (bits.any() && (known || WritableOnly(bits))));
+            buffers = buffers && (bits.all() || bits.any());
+            raw = raw && (bits.all() || !bits.any() || known || WritableOnly(bits));
             plan.buffer_raw.push_back(known ? map.buffer_raw[k] : std::array<u32, 4>{});
         }
+        const bool complete = images && samplers && buffers && raw;
+        why.image += !images;
+        why.sampler += !samplers;
+        why.buffer += !buffers;
+        why.buffer_raw += !raw;
         for (const auto& bits : map.images) {
             plan.images.push_back(CandidatesOf(bits));
         }
@@ -1079,6 +1092,7 @@ void PublishPlans() {
             plans->emplace(key.first, std::move(plan));
         }
     }
+    incomplete = why;
     std::scoped_lock lock{plans_mutex};
     published_plans = std::move(plans);
     plans_generation.fetch_add(1, std::memory_order_release);
@@ -1256,7 +1270,8 @@ void Report(u64 now) {
         PublishPlans();
         std::printf("Render boundary: flat (%s): stages %llu, from the draw state %llu, without a record %llu "
                     "(registers only %llu), without a plan %llu, a resource without a sharp %llu; sharps compared %llu, differing %llu; "
-                    "plans %zu; on the GPU thread from the draw state %llu, not %llu\n",
+                    "plans %zu (learnt programs without one: an image without a slot %llu, a sampler %llu, a "
+                    "buffer %llu, a buffer's V# unknown %llu); on the GPU thread from the draw state %llu, not %llu\n",
                     flat_mode == FlatFill ? "fill" : "check",
                     static_cast<unsigned long long>(flat_tally.stages.load()),
                     static_cast<unsigned long long>(flat_tally.filled.load()),
@@ -1267,6 +1282,10 @@ void Report(u64 now) {
                     static_cast<unsigned long long>(flat_tally.sharps.load()),
                     static_cast<unsigned long long>(flat_tally.differed.load()),
                     published_plans ? published_plans->size() : std::size_t(0),
+                    static_cast<unsigned long long>(incomplete.image),
+                    static_cast<unsigned long long>(incomplete.sampler),
+                    static_cast<unsigned long long>(incomplete.buffer),
+                    static_cast<unsigned long long>(incomplete.buffer_raw),
                     static_cast<unsigned long long>(flat_tally.gpu_filled.load()),
                     static_cast<unsigned long long>(flat_tally.gpu_failed.load()));
     }

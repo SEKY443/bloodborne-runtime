@@ -329,8 +329,10 @@ the PS4 user data.
 **Draws outside the seven methods** (render-target passes, Scaleform; 8.6% of draw stages): 81% of
 their stages take every sharp from the user-data registers, so no walker runs and no boundary is
 needed. With the methods' draws filled from the draw state (85%), 92.5% of draw shader stages run
-without the walker; the rest are method draws whose program has no plan yet (5.9%) and draws
-outside the methods that walk tables (1.6%).
+without the walker; the rest are method draws whose program has no plan (5.9%) and draws
+outside the methods that walk tables (1.6%). Those programs are few: of the programs learnt, 141
+have a plan and 7 cannot (six read a buffer that matches no slot of the draw state, one a
+sampler); learning for longer does not change it (plans after 16 draws instead of 256: one more).
 
 **Compute passes.** 
 Two kinds of dispatch reach libGnm (counted with `BB_RENDER_BOUNDARY=flat-check`, Cathedral Ward):
