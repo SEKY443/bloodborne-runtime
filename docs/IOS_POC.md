@@ -11,6 +11,10 @@ repository: bloodborne-mac's `docs/ARCHITECTURE.md` ("Where code lives").
 
 - The game boots, loads the copied Mac save and plays, with the FPS overlay and touch through
   SDL's mouse emulation.
+- The phone prepares the game's executable itself (2026-10-30): the runtime reads
+  `Documents/game`'s `eboot.bin` and links its system modules in memory, as on the Mac, so
+  `boot-linked.bin` and `content.bin` no longer come from the Mac (`BB_IOS_PREPARE=0` still boots
+  them). `patches.bin` still does, until the patches are prepared by the runtime too.
 - Gameplay in the Hunter's Dream at 960×540, all effects on (about 1,420 draws a frame):
 
 | Build | FPS |
