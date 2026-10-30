@@ -439,6 +439,11 @@ static int write64(FILE *f, uint64_t value) {
 int bb_boot_write(const BbBoot *boot, const char *path) {
     FILE *f = fopen(path, "wb");
     if (!f) return -1;
+    const int written = bb_boot_write_stream(boot, f);
+    return fclose(f) == 0 && !written ? 0 : -1;
+}
+
+int bb_boot_write_stream(const BbBoot *boot, FILE *f) {
     uint8_t header[56];
     const uint64_t fields[6] = {boot->size, boot->entry, boot->load_count, boot->reloc_count, boot->name_count,
                                 (uint64_t)boot->init_env_is_ret};
@@ -476,7 +481,7 @@ int bb_boot_write(const BbBoot *boot, const char *path) {
         ok = fwrite(r, 1, sizeof(r), f) == sizeof(r);
     }
     ok = ok && fwrite(boot->image, 1, boot->size, f) == boot->size;
-    return fclose(f) == 0 && ok ? 0 : -1;
+    return ok ? 0 : -1;
 }
 
 /* ---- the AppContent profile (scripts/content_profile.py) ---- */

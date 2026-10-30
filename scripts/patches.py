@@ -391,7 +391,14 @@ def main():
     if gx_heap() and GX_HEAP not in names:
         names.append(GX_HEAP)
     names=validate_patch_requirements(names,a.game_dir)
-    segments=eboot_segments((a.out/'eboot.elf').read_bytes())
+    # The executable's segments from the game folder (mods never replace eboot.bin); out/eboot.elf
+    # is what prepare.py wrote, which the game no longer runs.
+    eboot=a.game_dir/'eboot.bin'
+    if eboot.is_file():
+        from prepare import parse_self
+        segments=eboot_segments(parse_self(eboot.read_bytes())[0])
+    else:
+        segments=eboot_segments((a.out/'eboot.elf').read_bytes())
     writes=compile_patches(a.xml,names,a.app_version,segments)
     size=render_size(read_settings(a.settings),a.render_res) if a.render_res else None
     # The UI keeps the game's 1920x1080 coordinates even for a larger output: the port draws

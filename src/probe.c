@@ -9,6 +9,7 @@
 #include <cpuid.h>
 #endif
 #include "runtime.h"
+#include "runtime_prepare.h"
 #include "cpu/bbcpu.h"
 #include "gpu/bbgpu.h"
 #if !(defined(__x86_64__) || (defined(__aarch64__) && defined(__APPLE__))) || !defined(__GNUC__)
@@ -485,8 +486,26 @@ int main(int argc, char **argv) {
         else { fprintf(stderr, "Unknown option: %s\n", argv[i]); return 1; }
     }
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s boot.bin [--cpu-only] [--strict-imports] [--content-profile file] [--app0 dir] [--user dir] [--patches file] [--timeout seconds] | --vulkan-only\n", argv[0]);
+        fprintf(stderr, "Usage: %s boot.bin|- [--cpu-only] [--strict-imports] [--content-profile file] [--app0 dir] [--user dir] [--patches file] [--timeout seconds] | --vulkan-only\n", argv[0]);
         return 1;
+    }
+    /* `-`: the executable prepared and its system modules linked here, from --app0, in memory
+     * (src/runtime_prepare.c: what scripts/prepare.py and link_modules.py write as files). */
+    const int from_game = !strcmp(argv[1], "-");
+    if (from_game && !app0) fail("`-` needs --app0 (the game's folder)");
+    if (from_game && !content_profile) {
+        BbContentProfile profile;
+        char error[512];
+        const char *sku = getenv("BB_CONTENT_SKU");
+        if (bb_content_profile(app0, !(sku && !strcmp(sku, "trial")), &profile, error, sizeof(error))) {
+            fprintf(stderr, "AppContent profile: %s\n", error);
+            fail("cannot read the content profile");
+        }
+        const uint32_t values[5] = {profile.sku, profile.user_params[0], profile.user_params[1],
+                                    profile.user_params[2], profile.user_params[3]};
+        printf("AppContent profile: SKU=%s, user params=[%u, %u, %u, %u], mounted add-ons=0\n",
+               profile.sku == 3 ? "full" : "trial", values[1], values[2], values[3], values[4]);
+        runtime_content_configure(values);
     }
     if (content_profile) {
         FILE *profile=fopen(content_profile,"rb");
@@ -529,7 +548,25 @@ int main(int argc, char **argv) {
     sigemptyset(&alarm_action.sa_mask); sigaction(SIGALRM, &alarm_action, NULL);
     alarm(timeout_seconds); /* 0 disables the watchdog */
 #endif
-    FILE *f = fopen(argv[1], "rb");
+    FILE *f = NULL;
+    char *boot_memory = NULL;
+    if (from_game) {
+        BbBoot boot;
+        char error[512];
+        if (bb_boot_prepare(app0, &boot, error, sizeof(error)) || bb_boot_link(app0, &boot, error, sizeof(error))) {
+            fprintf(stderr, "Preparing the game: %s\n", error);
+            fail("cannot prepare the game's executable");
+        }
+        printf("Prepared: image %llu bytes, %zu modules linked, %zu imports, %zu native bindings\n",
+               (unsigned long long)boot.size, boot.module_count, boot.name_count, boot.binding_count);
+        size_t length = 0;
+        FILE *stream = open_memstream(&boot_memory, &length);
+        if (!stream || bb_boot_write_stream(&boot, stream) || fclose(stream)) fail("cannot prepare the game in memory");
+        bb_boot_free(&boot);
+        f = fmemopen(boot_memory, length, "rb");
+    } else {
+        f = fopen(argv[1], "rb");
+    }
     if (!f) fail("cannot open boot file; run prepare.py first");
     char magic[8];
     if (fread(magic, 1, 8, f) != 8 || (memcmp(magic, "BBPROBE1", 8) && memcmp(magic, "BBPROBE2", 8) && memcmp(magic,"BBPROBE3",8) && memcmp(magic,"BBPROBE4",8) && memcmp(magic,"BBPROBE5",8))) fail("bad boot file signature");
@@ -636,6 +673,7 @@ int main(int argc, char **argv) {
     runtime_native_load(bb_image_base);
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
     fclose(f);
+    free(boot_memory);
     runtime_game_lock_load(bb_image_base);
     if (!cpu_only) {
         char title[128]="Bloodborne", serial[16]="UNKNOWN", sfo[4096];

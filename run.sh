@@ -142,10 +142,9 @@ if [[ $game != "$(realpath "$original_game")" ]]; then
     mod_game=$game
     trap '"$PYTHON" -c '\''import shutil,sys; shutil.rmtree(sys.argv[1])'\'' "$mod_game"' EXIT
 fi
-"$PYTHON" scripts/prepare.py "$game" --out "$out"
-"$PYTHON" scripts/link_libc.py "$game" --out "$out"
-"$PYTHON" scripts/link_modules.py "$game" --out "$out"
-"$PYTHON" scripts/content_profile.py "$game" --out "$out" --sku "${BB_CONTENT_SKU:-full}"
+# The executable is prepared, its system modules linked and the AppContent profile read by the
+# game itself, in memory (src/runtime_prepare.c; its `-` below): what scripts/prepare.py,
+# link_modules.py and content_profile.py wrote into $out. BB_CONTENT_SKU=trial for a trial SKU.
 # Sizes chosen below for the previous launch are recomputed after an in-game restart.
 if [[ ${BB_AUTO_RENDER_RES:-} == 1 ]]; then
     unset BB_RENDER_RES BB_OUTPUT_RES BB_AUTO_RENDER_RES
@@ -313,7 +312,7 @@ if [[ ${BB_ONLINE:-0} == 1 && -f scripts/online.py ]]; then
         export SHADPS4_HTTP_HOST_OVERRIDES_JSON
     fi
 fi
-probe_args=("$out/boot-linked.bin" --content-profile "$out/content.bin" --patches "$out/patches.bin" --app0 "$game" --user "${BB_USER_DIR:-$data/user}" --timeout "${BB_TIMEOUT:-0}" "$@")
+probe_args=(- --patches "$out/patches.bin" --app0 "$game" --user "${BB_USER_DIR:-$data/user}" --timeout "${BB_TIMEOUT:-0}" "$@")
 if [[ -n ${mod_game:-} ]]; then
     # stdin passed on explicitly: a background command's is /dev/null otherwise (the launcher's
     # settings channel arrives on it).

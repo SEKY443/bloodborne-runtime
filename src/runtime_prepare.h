@@ -42,6 +42,9 @@ int bb_boot_link(const char *game_dir, BbBoot *boot, char *error, size_t error_s
 /* boot.bin (BBPROBE2) as scripts/prepare.py writes it, or boot-linked.bin (BBPROBE5) as
  * scripts/link_modules.py writes it once linked. 0 on success. */
 int bb_boot_write(const BbBoot *boot, const char *path);
+/* The same, to an open stream (the game reads it from memory: probe.c's `-`). */
+#include <stdio.h>
+int bb_boot_write_stream(const BbBoot *boot, FILE *f);
 void bb_boot_free(BbBoot *boot);
 /* The AppContent profile scripts/content_profile.py writes as content.bin: the SKU (3: full, 1:
  * trial) and the four USER_DEFINED_PARAM values of GAME_DIR/sce_sys/param.sfo. 0 on success. */

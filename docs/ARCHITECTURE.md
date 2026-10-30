@@ -28,9 +28,12 @@ the player's settings.
 
 ## Loading the game
 
-`scripts/prepare.py` and `scripts/link_modules.py` turn the dump's `eboot.bin` and its system
-modules into one flat image; the PS4's libc and libSceFios2 are linked into it as game code.
-`src/probe.c` maps that image at `BB_IMAGE_BASE` (on macOS inside the guest address range that
+The game turns the dump's `eboot.bin` and its system modules into one flat image itself, in
+memory (`src/runtime_prepare.c`, when `run.sh` starts `bb-probe` with `-`); the PS4's libc and
+libSceFios2 are linked into it as game code, and the AppContent profile comes from `param.sfo`.
+The Python scripts that did it before (`scripts/prepare.py`, `scripts/link_modules.py`,
+`scripts/content_profile.py`) write the same bytes, and `bb-prepare` (`tools/bb_prepare.c`)
+compares them. `src/probe.c` maps that image at `BB_IMAGE_BASE` (on macOS inside the guest address range that
 `src/platform.c` reserves at startup), applies relocations and imports, then the patches
 (`scripts/patches.py` from `patches/Bloodborne.xml`, the community's patch collection), then the
 runtime's own hooks (`bbgpu_patch_image`), and finally starts the game's entry point.
