@@ -130,7 +130,7 @@ pipeline states in a binary archive between sessions.
 ## Steps
 
 Each step kept the renderer playable, kept Linux building, and was measured against the step
-before it (M3 Pro, copied saves, alternating runs; "Cathedral Ward" is the test save's place).
+before it (M3 Pro, copied saves, alternating runs; "Iosefka's Clinic" is the test save's place).
 
 | Step | What moved | Accepted with |
 |---|---|---|
@@ -142,8 +142,8 @@ before it (M3 Pro, copied saves, alternating runs; "Cathedral Ward" is the test 
 | A5 ✓ | Shaders, vertex input and pipelines through the device; pipelines hold their shaders | Every pipeline builds (400 in a test run, 550 in a long session; 0 failed); 4.38 against 4.37 µs per draw |
 | A6 ✓ | Resource binding, the renderer's own passes, frame images, swapchain, upscaler images | Every upscaler on this Mac renders (off, FSR 3.1, TAA, MetalFX); frame times as before |
 | M1 ✓ | Buffers and images made in Metal | Loads a save and plays with `BB_GFX_BACKEND=metal`; 25.9 against 26.0 ms median |
-| M2 ✓ | All shared recording through the adapter; the Metal recorder, Metal pipelines, presentation in Metal, submissions committed in Metal | Cathedral Ward, FSR 3.1 Balanced: 36.2 FPS against MoltenVK's 27.6; a 10-minute session (21,904 frames) and a 3 h 26 min play session without faults |
-| M3 ✓ | Upscaler off by default; MetalFX the Metal backend's only upscaler (decision 5) | Cathedral Ward: native 1080p 39.0 FPS, MetalFX Balanced 33.5, MetalFX Quality 31.7, FSR 3.1 Balanced 36.2 |
+| M2 ✓ | All shared recording through the adapter; the Metal recorder, Metal pipelines, presentation in Metal, submissions committed in Metal | Iosefka's Clinic, FSR 3.1 Balanced: 36.2 FPS against MoltenVK's 27.6; a 10-minute session (21,904 frames) and a 3 h 26 min play session without faults |
+| M3 ✓ | Upscaler off by default; MetalFX the Metal backend's only upscaler (decision 5) | Iosefka's Clinic: native 1080p 39.0 FPS, MetalFX Balanced 33.5, MetalFX Quality 31.7, FSR 3.1 Balanced 36.2 |
 | M4 | Metal by default on Apple Silicon; every Vulkan call that reached MoltenVK replaced; start-up without the loader or MoltenVK; MetalFX on the frame's command buffer | Implemented: Vulkan calls reaching MoltenVK during play from about 916,000 a second to none, then none at start-up; native start-up against the build before it, native 1080p: 36.9 against 36.8 FPS; 0 capability differences on the M3 Pro. Acceptance pending (above) |
 
 ## What was learnt

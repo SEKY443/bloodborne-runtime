@@ -44,7 +44,7 @@ cd tests && python3 -m unittest discover -p 'test_*.py'
 
 On macOS the Linux-only Python tests (`test_packaged_vulkan`, the Intel tonemap check) and
 `test_probe.LoaderTests` fail: known. A healthy run on the maintainer's M3 Pro with the defaults
-(Metal renderer, native 1080p, no upscaler) reads 38.2–39.6 FPS standing in Cathedral Ward; FPS
+(Metal renderer, native 1080p, no upscaler) reads 38.2–39.6 FPS standing in Iosefka's Clinic; FPS
 is bound by rendering, so CPU-side changes are measured in CPU time, in alternating runs
 (`docs/BUILDING.md#measuring`).
 

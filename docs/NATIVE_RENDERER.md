@@ -81,14 +81,14 @@ In this order (the app's roadmap):
 
   | Where, setting | Metal | MoltenVK |
   |---|---|---|
-  | Cathedral Ward (the test save), native 1080p | 38.2–39.6 FPS | 30.6 FPS |
+  | Iosefka's Clinic (the test save), native 1080p | 38.2–39.6 FPS | 30.6 FPS |
   | Hunter's Dream, FSR 3.1 Balanced (the Metal backend's first version, when it still offered FSR) | 65.5 and 61.7 FPS, p90 16.3 and 17.6 ms | 58.0 and 58.1 FPS, p90 20.4 and 18.9 ms |
   | A new game, 3 h 26 min of play by the maintainer, native 1080p | median 42.2 FPS, 37.2 or more 90% of the time, no faults | not measured |
 
   Every pipeline the game used in a long session builds in Metal (550: 510 graphics, 40 compute;
   0 failed), and no draw met a missing pipeline or an unsupported command. The GPU thread
   records a draw in about 4.0–4.4 µs on the Metal backend.
-- **Upscalers on Metal.** At native 1080p no upscaler beats native: in Cathedral Ward native
+- **Upscalers on Metal.** At native 1080p no upscaler beats native: in Iosefka's Clinic native
   39.0 FPS, MetalFX Balanced 33.5, MetalFX Quality 31.7. At 1080p the frame is not bound by
   pixel work, so the upscaler is off by default.
 
@@ -293,7 +293,7 @@ The steps:
 4. **Measured** against today's path in alternating runs: the workers' CPU time, the draws they
    prepare, frame time. Draws without a record or a frozen map keep the walker.
 
-**What it gave** (Cathedral Ward, M3 Pro, the recompiled library):
+**What it gave** (Iosefka's Clinic, M3 Pro, the recompiled library):
 
 - **Exact:** `flat-check` compared 51,738,285 sharps filled from the draw state with the walker's,
   0 differing, with every draw method's draws (N2.4). A plan keeps every candidate slot of a resource (slots that held the same sharp in
@@ -335,7 +335,7 @@ have a plan and 7 cannot (six read a buffer that matches no slot of the draw sta
 sampler); learning for longer does not change it (plans after 16 draws instead of 256: one more).
 
 **Compute passes.** 
-Two kinds of dispatch reach libGnm (counted with `BB_RENDER_BOUNDARY=flat-check`, Cathedral Ward):
+Two kinds of dispatch reach libGnm (counted with `BB_RENDER_BOUNDARY=flat-check`, Iosefka's Clinic):
 
 - **Through the resource binder (7%):** `CG::GraphicsContext::dispatch` and others call
   `CG::ResourceBinder::commitCompute` with a compute state, which holds one shader stage laid
@@ -379,7 +379,7 @@ attribute's number class, each buffer's stride and format, each image's view typ
 is an integer or writable image, the samplers, and settings such as instance step rates
 (`Shader::StageSpecialization`). The shader's code fixes some of these (an image's dimension) but
 not all. So the step converts each program with a predicted specialization, and a draw whose
-specialization differs converts at first use, as now. **Where the first-play time goes** (Cathedral Ward from an emptied test cache, `BB_SHADER_LOG=1`,
+specialization differs converts at first use, as now. **Where the first-play time goes** (Iosefka's Clinic from an emptied test cache, `BB_SHADER_LOG=1`,
 M3 Pro): converting the game's shaders is cheap, 336 variants in 0.4 s (275 programs' first
 variants, 1.2 ms each on average, 61 later variants). The cost is building Metal pipelines from
 them: 589 pipelines in 2.9 s. 2.6 s of it falls in two frames as the level first appears (1.1 s

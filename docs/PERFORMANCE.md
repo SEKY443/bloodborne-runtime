@@ -14,7 +14,7 @@ The default (native Metal, upscaler off, native 1080p):
 
 | Place | FPS |
 |---|---|
-| Cathedral Ward, standing (the test save; about 1,660 draws a frame) | 38.2–39.6 |
+| Iosefka's Clinic, standing (the test save; about 1,660 draws a frame) | 38.2–39.6 |
 | A new game, 3 h 26 min of play by the maintainer | median 42.2; 37.2 or more 90% of the time |
 | Hunter's Dream | not measured |
 
@@ -22,9 +22,9 @@ For comparison:
 
 | Place | Renderer, upscaler | FPS |
 |---|---|---|
-| Cathedral Ward | MoltenVK, none | 30.6 |
-| Cathedral Ward | MoltenVK, FSR 3.1 Balanced | 27.6 |
-| Cathedral Ward | Metal, MetalFX Balanced / Quality | 33.5 / 31.7 |
+| Iosefka's Clinic | MoltenVK, none | 30.6 |
+| Iosefka's Clinic | MoltenVK, FSR 3.1 Balanced | 27.6 |
+| Iosefka's Clinic | Metal, MetalFX Balanced / Quality | 33.5 / 31.7 |
 | Hunter's Dream | MoltenVK, FSR 3.1 Balanced | 58–68 |
 | Hunter's Dream | Metal's first version (before the render adapter), FSR 3.1 Balanced | 62–66 |
 | Central Yharnam | MoltenVK, FSR 3.1 Balanced | 44–49 |
@@ -36,7 +36,7 @@ Native Metal is about 25–30% faster than MoltenVK at native 1080p. FSR is not 
 the MoltenVK fallback.
 
 **Why the upscaler is off by default.** On Metal at 1080p the frame is not bound by pixel work:
-in Cathedral Ward MetalFX Balanced renders 44% of the pixels and runs at 33.5 FPS against native
+in Iosefka's Clinic MetalFX Balanced renders 44% of the pixels and runs at 33.5 FPS against native
 39.0, and FSR 3.1 Balanced (when the Metal renderer still offered it) ran at 36.2. The
 upscalers are for outputs above 1080p, where native resolution needs too much memory.
 
@@ -44,17 +44,17 @@ upscalers are for outputs above 1080p, where native resolution needs too much me
 
 - **The game's code** takes about 3–5 cores through the translator, and about 14% less with the
   recompiled library at the same frame rate: 344% of one core against 402% at the 1st Floor
-  Sickroom lamp, 357% against 392% in Cathedral Ward. The recompiler's milestone R3 (its speed)
+  Sickroom lamp, 357% against 392% in Iosefka's Clinic. The recompiler's milestone R3 (its speed)
   is done; its CPU work continues (bloodborne-recomp's RECOMPILATION.md, "Where the CPU time
   goes"). Six more C library calls on the host (`strncmp`, `strchr`, `strstr`, `exp2f`, `wcschr`,
   `wcscmp`) and recomp's jump tables across blocks: calls into the translator 69,600 a second to
-  40,300, the library's CPU time 342% to 339% in Cathedral Ward. Then 99 more jump tables, the C
+  40,300, the library's CPU time 342% to 339% in Iosefka's Clinic. Then 99 more jump tables, the C
   library's character tables (`_Getpctype` and the two case tables, read from libc.prx's own
   `lea rax, [rip + table]; ret`), `fmodf`, `wcsrchr` and `atanf` on the host: 9,400 a second,
   nearly all the game's operator new and delete (its own heap); CPU time measured with the
   host-call path change that follows.
 - **The renderer's GPU thread** records a draw in about 4.0–4.4 µs on Metal.
-- **The renderer's threads on native Metal** (Cathedral Ward, translated, 39 FPS; a 5-second
+- **The renderer's threads on native Metal** (Iosefka's Clinic, translated, 39 FPS; a 5-second
   macOS sample, `SAMPLE=1`, read with `tools/sample_split.py`): recording into Metal (`DrawRec`
   and the three `VkRecorder` threads) about 1.8 cores; preparing draws ahead (six `DrawPrep`
   workers and `DrawScan`) about 0.9 core; decoding the command buffers (`GpuCommandProcessor`)
@@ -92,7 +92,7 @@ and on Apple's tile-based GPUs each new pass reloads its attachments.
 
 | Change | Renderer, upscaler, place | Effect |
 |---|---|---|
-| The native Metal renderer | Cathedral Ward, none | 38.2–39.6 FPS against 30.6 on MoltenVK |
+| The native Metal renderer | Iosefka's Clinic, none | 38.2–39.6 FPS against 30.6 on MoltenVK |
 | The Metal renderer's first version (`BB_METAL_FRAME=1`) | Hunter's Dream, FSR 3.1 Balanced | 65.5 and 61.7 FPS against 58.0 and 58.1 on MoltenVK; p90 16–18 ms against 19–20 |
 | MetalFX encoded on the native frame's command buffer instead of the export bridge | Metal, MetalFX, copied save (one pair) | 34.5 against 30.8 mean FPS |
 | No SPIR-V `NoContraction` (SPIRV-Cross made unoptimizable helpers of it in every shader) | MoltenVK | 16.7 → 30.4 FPS |
@@ -102,8 +102,8 @@ and on Apple's tile-based GPUs each new pass reloads its attachments.
 | Colour clears deferred to the next pass's load action (`BB_DEFER_CLEARS`) | MoltenVK | +1–2 FPS in three pairs |
 | Copies recorded before a render pass instead of splitting it (`BB_HOIST_COPIES`) | MoltenVK | about 1–2 ms |
 | Larger direct memory only for outputs above 1080p, sized from the scene | MoltenVK, the clinic | A 9 GB pool had run the clinic at 7 FPS on 18 GB |
-| The recompiled library | Metal, Cathedral Ward | 14% less CPU time, same frame rate |
-| A diagnostic switch read once instead of on every draw (`BB_FIXED_QUAD_PROBE`) | Metal, Cathedral Ward (one pair) | The draw-preparation workers 10% less busy (482 against 538 samples); getenv's lock no longer contended; FPS and game CPU unchanged |
+| The recompiled library | Metal, Iosefka's Clinic | 14% less CPU time, same frame rate |
+| A diagnostic switch read once instead of on every draw (`BB_FIXED_QUAD_PROBE`) | Metal, Iosefka's Clinic (one pair) | The draw-preparation workers 10% less busy (482 against 538 samples); getenv's lock no longer contended; FPS and game CPU unchanged |
 | Frame rate through hooks instead of patches | Not recorded | No cost: 66.6–68.0 against 65.0–67.3 FPS |
 
 The MetalFX upscaler came from [bmy/bbport-mac](https://github.com/bmy/bbport-mac) (commit
